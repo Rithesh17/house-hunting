@@ -25,6 +25,7 @@ import requests
 from dotenv import load_dotenv
 
 import db
+import geo
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(ROOT, ".env"))
@@ -77,8 +78,12 @@ def build_rows(conn) -> list[dict]:
         members.sort(key=lambda m: (m.get("fit_score") or -1,
                                     m.get("legit_score") or -1), reverse=True)
         primary = objs.get(gid, members[0])
+        area = geo.classify(primary.get("lat"), primary.get("lng"),
+                            primary.get("area"))
         out.append({
             "id": primary["id"],
+            "area_tier": area["area_tier"],
+            "proximity_km": area["proximity_km"],
             "source": primary.get("source"),
             "url": primary.get("url"),
             "title": primary.get("title"),

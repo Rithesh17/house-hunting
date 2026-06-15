@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 import common
 import db
+import geo
 
 ROOT = common.ROOT
 load_dotenv(os.path.join(ROOT, ".env"))
@@ -34,15 +35,30 @@ DASHBOARD_URL = (os.getenv("VERCEL_DASHBOARD_URL")
 LABEL_EMOJI = {"likely-legit": "🟢", "unverified-amateur": "🟡", "likely-scam": "🔴"}
 
 
+def _tier(row) -> str:
+    return geo.classify(row["lat"], row["lng"], row["area"])["area_tier"]
+
+
+def _prox(row) -> float:
+    return geo.classify(row["lat"], row["lng"], row["area"])["proximity_km"]
+
+
 def qualifies(row, cfg: dict) -> bool:
     n = cfg.get("notify", {})
     if (row["legit_label"] or "") == "likely-scam":
+        return False
+    if _tier(row) == "avoid":  # never alert on Tenderloin-adjacent / avoid areas
         return False
     if (row["legit_score"] or 0) < n.get("min_legit_score", 70):
         return False
     if (row["fit_score"] or 0) < n.get("min_fit_score", 60):
         return False
     return True
+
+
+def _rank_key(row) -> tuple:
+    """Order by proximity to work asc, then match desc, then trust desc."""
+    return (_prox(row), -(row["fit_score"] or 0), -(row["legit_score"] or 0))
 
 
 def _item_block(row) -> str:
@@ -59,9 +75,12 @@ def _item_block(row) -> str:
         type_bits.append(f"~{d['sqft']}sqft")
     type_str = " / ".join(type_bits)
 
+    area = geo.classify(d.get("lat"), d.get("lng"), d.get("area"))
+    prox = area["dist_km"]
+    prox_str = f" · ~{prox:g}km to work" if prox is not None else ""
     head = f"🏠 <b>{_h(d.get('title') or 'Listing')}</b>"
     money = f"💵 ${d.get('price', '?')}" + (f" · {_h(type_str)}" if type_str else "")
-    place = (f"📍 {_h(d.get('neighborhood') or d.get('area') or 'San Francisco')}"
+    place = (f"📍 {_h(area['area_name'] or d.get('area') or 'San Francisco')}{prox_str}"
              f"  ·  {emoji} {d.get('legit_score','?')} · ⭐ {d.get('fit_score','?')}")
     lines = [head, money, place]
     if d.get("verdict_summary"):
@@ -139,8 +158,7 @@ def main() -> None:
         # only cluster primaries (dup_group null or == id), qualifying, best first
         prim = [r for r in rows if r["dup_group"] in (None, r["id"])]
         q = [r for r in prim if qualifies(r, cfg)]
-        q.sort(key=lambda r: ((r["fit_score"] or 0) + (r["legit_score"] or 0),
-                              (r["fit_score"] or -1)), reverse=True)
+        q.sort(key=_rank_key)  # proximity to work, then match, then trust
         targets = q[:args.top]
     elif args.all_qualifying:
         rows = conn.execute(
@@ -170,9 +188,8 @@ def main() -> None:
         print("Nothing to notify.")
         return
 
-    # rank best-first (match, then trust) and send ONE digest (chunked if huge)
-    targets.sort(key=lambda r: ((r["fit_score"] or -1), (r["legit_score"] or -1)),
-                 reverse=True)
+    # rank by proximity to work, then match, then trust; send ONE digest
+    targets.sort(key=_rank_key)
     n = len(targets)
     header = f"🏠 <b>SF House-Hunt — {n} top pick{'s' if n != 1 else ''}</b>"
     footer = f"🗺 Full ledger: {_h(DASHBOARD_URL)}"
