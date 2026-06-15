@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The San Francisco Property Register</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..700&family=Archivo:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="masthead">
+    <div class="dateline">
+      <span>Est. MMXXVI</span><span class="dot">✦</span>
+      <span>Craigslist Dossier</span><span class="dot">✦</span>
+      <span id="today"></span>
+    </div>
+    <div class="masthead-main">
+      <h1>The San&nbsp;Francisco<br/>Property Register</h1>
+      <p class="lede">A vetted ledger of apartments &amp; studios under $2,000 —
+        each entry inspected, scored, and stamped for trust.</p>
+    </div>
+    <div class="masthead-rule"><span id="count" class="count">—</span></div>
+  </header>
+
+  <nav class="toolbar">
+    <div class="views">
+      <button id="view-list" class="vtab active"><span>I.</span> Index</button>
+      <button id="view-map" class="vtab"><span>II.</span> Atlas</button>
+    </div>
+
+    <div class="filters">
+      <label class="field"><span>Sort</span>
+        <select id="sort">
+          <option value="fit">Best match</option>
+          <option value="legit">Most trusted</option>
+          <option value="price-asc">Price ↑</option>
+          <option value="price-desc">Price ↓</option>
+          <option value="newest">Newest</option>
+        </select>
+      </label>
+      <label class="field"><span>Type</span>
+        <select id="filter-type">
+          <option value="">All</option>
+          <option value="1br">One Bed</option>
+          <option value="studio">Studio</option>
+          <option value="others">2+ Bed</option>
+        </select>
+      </label>
+      <label class="field"><span>Max&nbsp;$</span>
+        <input id="filter-price" type="number" min="0" step="50" value="2000" />
+      </label>
+      <div class="field areafield">
+        <span>Areas</span>
+        <button type="button" id="area-btn">All areas ▾</button>
+        <div id="area-menu" class="area-menu hidden"></div>
+      </div>
+      <label class="field"><span>Trust</span>
+        <select id="filter-legit">
+          <option value="0">Any</option>
+          <option value="50">50+</option>
+          <option value="70">70+</option>
+          <option value="85">85+</option>
+        </select>
+      </label>
+      <label class="field"><span>Match</span>
+        <select id="filter-fit">
+          <option value="0">Any</option>
+          <option value="40">40+</option>
+          <option value="60">60+</option>
+          <option value="80">80+</option>
+        </select>
+      </label>
+      <label class="field"><span>Status</span>
+        <select id="filter-status">
+          <option value="">All</option>
+          <option value="new">New</option>
+          <option value="vetted">Vetted</option>
+          <option value="interested">Interested</option>
+          <option value="contacted">Contacted</option>
+          <option value="rejected">Rejected</option>
+          <option value="removed">Removed (taken down)</option>
+        </select>
+      </label>
+      <label class="toggle"><input type="checkbox" id="hide-scams" checked /><span>Hide flagged</span></label>
+      <label class="toggle"><input type="checkbox" id="show-rejected" /><span>Show rejected</span></label>
+    </div>
+  </nav>
+
+  <div class="legend" id="legend"></div>
+
+  <main>
+    <section id="list" aria-label="Listings"></section>
+    <section id="map" class="hidden"></section>
+  </main>
+  <div id="pager" class="pager"></div>
+
+  <div id="modal" class="modal hidden" aria-hidden="true">
+    <div class="sheet">
+      <button id="modal-close" class="close" aria-label="Close">✕</button>
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
