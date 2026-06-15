@@ -55,6 +55,7 @@ async function load() {
   }
   buildAreaMenu();
   render();
+  openFromHash();
 }
 
 /* Shape a cloud row to what the renderer expects. */
@@ -260,14 +261,92 @@ function setView(view) {
   VIEW = view;
   document.getElementById("view-list").classList.toggle("active", view === "list");
   document.getElementById("view-map").classList.toggle("active", view === "map");
+  document.getElementById("view-featured").classList.toggle("active", view === "featured");
   document.getElementById("list").classList.toggle("hidden", view !== "list");
   document.getElementById("map").classList.toggle("hidden", view !== "map");
+  document.getElementById("featured").classList.toggle("hidden", view !== "featured");
+  // filters only apply to the Index/Atlas; dim them on the curated Featured page
+  document.querySelector(".filters").classList.toggle("muted", view === "featured");
   if (view === "map") {
     if (!MAP) initMap();
     setTimeout(() => { MAP.invalidateSize(); render(); }, 60);
+  } else if (view === "featured") {
+    renderFeatured();
   } else {
     render();
   }
+}
+
+/* ----------------------------------------------------------- featured */
+/* The best of the ledger by BOTH scores: legit + fit must each clear a bar,
+ * then ranked by their combined strength. A short, curated page. */
+function featuredItems() {
+  return LISTINGS
+    .filter((d) => d.status !== "rejected" && d.status !== "removed" &&
+      d.legit_label !== "likely-scam" &&
+      (d.fit_score ?? 0) >= 70 && (d.legit_score ?? 0) >= 70)
+    .sort((a, b) =>
+      ((b.fit_score + b.legit_score) - (a.fit_score + a.legit_score)) ||
+      ((b.fit_score ?? 0) - (a.fit_score ?? 0)) ||
+      ((a.price ?? 1e9) - (b.price ?? 1e9)))
+    .slice(0, 12);
+}
+
+function renderFeatured() {
+  const el = document.getElementById("featured");
+  const items = featuredItems();
+  if (!items.length) {
+    el.innerHTML = `<p class="empty">No entries clear the featured bar yet
+      (needs trust ≥ 70 and match ≥ 70).</p>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="feat-head">
+      <h2>Featured</h2>
+      <p>The strongest entries on file — high trust <em>and</em> high match,
+        ${items.length} of them, best first.</p>
+    </div>
+    <div class="feat-grid">` +
+    items.map((d, i) => {
+      const t = typeOf(d), tr = trust(d);
+      const photo = d.photos && d.photos[0];
+      const specs = [];
+      if (d.bedrooms != null) specs.push(d.bedrooms ? `${d.bedrooms} BR` : "Studio");
+      if (d.bathrooms != null) specs.push(`${d.bathrooms} BA`);
+      if (d.sqft) specs.push(`~${d.sqft} ft²`);
+      return `
+      <article class="featcard" data-id="${esc(d.id)}" style="--accent:${scoreColor(d.fit_score)}">
+        <div class="featrank">${String(i + 1).padStart(2, "0")}</div>
+        <div class="featph ${photo ? "" : "none"}">
+          ${photo ? `<img src="${photo}" loading="lazy" referrerpolicy="no-referrer" alt="" />`
+                  : "no photograph"}
+          <span class="featprice">$${(d.price ?? 0).toLocaleString()}</span>
+        </div>
+        <div class="featbody">
+          <h3>${esc(d.title || "Untitled entry")}</h3>
+          <div class="feathood"><span class="pin">◈</span> ${esc(d.area || d.neighborhood || "San Francisco")}
+            <span class="srctag">${esc(sourceLabel(d.source))}</span></div>
+          <div class="featspecs"><span class="chip kind">${esc(t.kind)}</span>
+            ${specs.map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>
+          <div class="featscores">
+            <span class="featpill"><b>${d.legit_score ?? "—"}</b> trust ${TEMOJI[d.legit_label] || "⚪"}</span>
+            <span class="featpill"><b>${d.fit_score ?? "—"}</b> match ⭐</span>
+          </div>
+          ${d.verdict_summary ? `<p class="featsum">${esc(d.verdict_summary)}</p>` : ""}
+          ${d.recommendation ? `<p class="featrec">→ ${esc(d.recommendation)}</p>` : ""}
+        </div>
+      </article>`;
+    }).join("") + `</div>`;
+  el.querySelectorAll(".featcard").forEach((c) =>
+    c.addEventListener("click", () => openModal(c.dataset.id)));
+}
+
+/* Open a listing's dossier straight from a #id=<id> deep link (Telegram). */
+function openFromHash() {
+  const m = (location.hash || "").match(/id=([^&]+)/);
+  if (!m) return;
+  const id = decodeURIComponent(m[1]);
+  if (LISTINGS.find((x) => x.id === id)) openModal(id);
 }
 
 /* ----------------------------------------------------------- dossier modal */
@@ -366,6 +445,8 @@ function init() {
       .addEventListener("input", () => { PAGE = 1; render(); }));
   document.getElementById("view-list").addEventListener("click", () => setView("list"));
   document.getElementById("view-map").addEventListener("click", () => setView("map"));
+  document.getElementById("view-featured").addEventListener("click", () => setView("featured"));
+  window.addEventListener("hashchange", openFromHash);
   const areaBtn = document.getElementById("area-btn");
   areaBtn.addEventListener("click", (e) => {
     e.stopPropagation();
