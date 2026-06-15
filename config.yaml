@@ -1,0 +1,91 @@
+# SF house-hunting search configuration.
+# Craigslist's nh= neighborhood codes are unreliable, so the fetcher runs one
+# citywide pass per room_type (price + bedrooms ARE honored server-side) and then
+# buckets results into target areas by matching the listing's location text.
+
+max_price: 2000          # hard cap, $/month
+min_bathrooms: 1
+
+# Target areas, ordered by the user's preference. `weight` feeds the fit score
+# (10 = ideal). `match` = lowercase substrings tested against each listing's
+# Craigslist location text; first area whose substring matches wins.
+areas:
+  - name: "Inner Richmond"          # user's favourite
+    weight: 10
+    match: ["inner richmond"]
+  - name: "Inner Sunset / UCSF"
+    weight: 10
+    match: ["inner sunset", "ucsf"]
+  - name: "West Portal / Forest Hill"
+    weight: 8
+    match: ["west portal", "forest hill"]
+  - name: "Sunset / Parkside"
+    weight: 8
+    match: ["sunset / parkside", "parkside", "outer sunset", "sunset blvd", "the sunset"]
+  - name: "Noe Valley"
+    weight: 7
+    match: ["noe valley"]
+  - name: "Marina / Cow Hollow"
+    weight: 7
+    match: ["marina", "cow hollow"]
+  - name: "Outer Richmond / Seacliff"
+    weight: 7
+    match: ["richmond / seacliff", "seacliff", "outer richmond"]
+  - name: "Glen Park"
+    weight: 6
+    match: ["glen park"]
+  - name: "Cole Valley / Ashbury Hts"
+    weight: 6
+    match: ["cole valley", "ashbury"]
+  - name: "Laurel Hts / Presidio"
+    weight: 6
+    match: ["laurel", "presidio"]
+
+# Listings with a vague but plausibly-SF location ("san francisco", "city of san
+# francisco") are kept for vetting under this bucket; named non-target hoods
+# (nob hill, tenderloin, ingleside, etc.) and other cities are dropped.
+include_unspecified_sf: true
+unspecified_area_name: "(unspecified SF)"
+
+# PULL PHILOSOPHY: pull broadly (almost all of SF, price-capped, no office/parking),
+# then let SUBAGENTS manually read each post and filter rooms / tag scams / judge
+# fit. We do NOT script-filter rooms or scams — only two objective, no-false-
+# positive mechanical gates remain (no-photos, and outside-SF by coordinates).
+#
+# One broad pass: hhh + max_price + excats (server-side excludes office/parking).
+# Then a category BLOCK-list by post-URL code removes non-rental categories.
+excats: "40-1"                       # craigslist: exclude office/commercial + parking
+blocked_categories: ["off", "rea", "reb", "vac", "swp", "prk", "park", "fee"]
+
+# Room-type passes. Studio = 0 bedrooms, 1BR = 1 bedroom. 1BR is the priority.
+room_types:
+  - key: "1br"
+    label: "1 bed / 1 bath"
+    min_bedrooms: 1
+    max_bedrooms: 1
+    priority: 1            # surfaced first everywhere
+  - key: "studio"
+    label: "Studio"
+    min_bedrooms: 0
+    max_bedrooms: 0
+    priority: 2
+  - key: "2br_plus"
+    label: "2+ bed (rare gems under budget)"
+    min_bedrooms: 2
+    max_bedrooms: 4
+    priority: 3
+
+# A spacious studio needs at least this many sqft to score well (smaller = penalised).
+min_studio_sqft: 450
+
+# Telegram notification gate. Only 🟢/🟡 (non-scam) posts clearing BOTH are pinged.
+notify:
+  min_legit_score: 70
+  min_fit_score: 60
+
+# Politeness when scraping Craigslist.
+scrape:
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+  page_size: 120          # craigslist returns 120 results per page
+  delay_seconds: 2.0      # pause between requests
+  max_pages_per_pass: 10  # safety cap (1200 results/pass is far more than exists)

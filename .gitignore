@@ -1,0 +1,20 @@
+# secrets
+.env
+
+# data + downloaded images
+data/listings.db
+data/images/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# node / playwright
+node_modules/
+tools/screenshots/
+
+# os
+Thumbs.db
+.DS_Store
