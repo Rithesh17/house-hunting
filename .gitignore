@@ -15,6 +15,16 @@ venv/
 node_modules/
 tools/screenshots/
 
+# vercel local link state
+.vercel/
+
+# supabase CLI local state (keep supabase/migrations/, ignore the rest)
+supabase/.temp/
+supabase/.branches/
+# stray npm scaffolding dropped by the supabase CLI (we use the scoop CLI)
+/package.json
+/package-lock.json
+
 # os
 Thumbs.db
 .DS_Store
