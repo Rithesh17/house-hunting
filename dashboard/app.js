@@ -31,6 +31,16 @@ const TRUST = {
 };
 function trust(d) { return TRUST[d.legit_label] || { cls: "t-amateur", label: "Unrated" }; }
 
+/* Area model: proximity to work (avoid areas sink), tier flag, distance label. */
+const proxOf = (d) => (d.area_tier === "avoid" ? 9999 : (d.proximity_km ?? 500));
+const isAvoid = (d) => d.area_tier === "avoid";
+function proxLabel(d) {
+  if (isAvoid(d)) return "off-area · avoid";
+  if (d.proximity_km == null) return "";
+  const km = Math.round(d.proximity_km * 10) / 10;
+  return `~${km} km to work`;
+}
+
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -128,6 +138,7 @@ function selection() {
   });
   const prio = (d) => (d.room_type === "1br" ? 0 : d.room_type === "studio" ? 1 : 2);
   const cmp = {
+    proximity: (a, b) => proxOf(a) - proxOf(b) || (b.fit_score ?? -1) - (a.fit_score ?? -1),
     fit: (a, b) => prio(a) - prio(b) || (b.fit_score ?? -1) - (a.fit_score ?? -1),
     legit: (a, b) => (b.legit_score ?? -1) - (a.legit_score ?? -1),
     "price-asc": (a, b) => (a.price ?? 1e9) - (b.price ?? 1e9),
@@ -195,7 +206,7 @@ function renderList(items) {
     specs.push(d.sqft ? `~${d.sqft} ft²` : "ft² n/a");
     const fit = d.fit_score ?? 0;
     const card = document.createElement("article");
-    card.className = "card" + (scam ? " flagged" : "");
+    card.className = "card" + (scam ? " flagged" : "") + (isAvoid(d) ? " offarea" : "");
     card.dataset.id = d.id;
     card.style.setProperty("--accent", scoreColor(d.fit_score));
     card.style.animationDelay = `${Math.min(i * 45, 600)}ms`;
@@ -212,6 +223,7 @@ function renderList(items) {
       <div class="body">
         <h3 class="title">${esc(d.title || "Untitled entry")}</h3>
         <div class="hood"><span class="pin">◈</span> ${esc(d.area || d.neighborhood || "San Francisco")}
+          ${proxLabel(d) ? `<span class="prox${isAvoid(d) ? " avoid" : ""}">${esc(proxLabel(d))}</span>` : ""}
           <span class="srctag">${sourceLabel(d.source)}${d.dup_count > 1 ? " +" + (d.dup_count - 1) : ""}</span></div>
         <div class="specs">
           <span class="chip kind">${esc(t.kind)}</span>
@@ -283,11 +295,11 @@ function setView(view) {
 function featuredItems() {
   return LISTINGS
     .filter((d) => d.status !== "rejected" && d.status !== "removed" &&
-      d.legit_label !== "likely-scam" &&
+      d.legit_label !== "likely-scam" && !isAvoid(d) &&
       (d.fit_score ?? 0) >= 70 && (d.legit_score ?? 0) >= 70)
     .sort((a, b) =>
+      proxOf(a) - proxOf(b) ||  // closest to work first, then best match
       ((b.fit_score + b.legit_score) - (a.fit_score + a.legit_score)) ||
-      ((b.fit_score ?? 0) - (a.fit_score ?? 0)) ||
       ((a.price ?? 1e9) - (b.price ?? 1e9)))
     .slice(0, 12);
 }
@@ -303,8 +315,8 @@ function renderFeatured() {
   el.innerHTML = `
     <div class="feat-head">
       <h2>Featured</h2>
-      <p>The strongest entries on file — high trust <em>and</em> high match,
-        ${items.length} of them, best first.</p>
+      <p>The strongest entries on file — high trust <em>and</em> high match in
+        good areas, ordered by proximity to work. ${items.length} of them.</p>
     </div>
     <div class="feat-grid">` +
     items.map((d, i) => {
@@ -325,6 +337,7 @@ function renderFeatured() {
         <div class="featbody">
           <h3>${esc(d.title || "Untitled entry")}</h3>
           <div class="feathood"><span class="pin">◈</span> ${esc(d.area || d.neighborhood || "San Francisco")}
+            ${proxLabel(d) ? `<span class="prox">${esc(proxLabel(d))}</span>` : ""}
             <span class="srctag">${esc(sourceLabel(d.source))}</span></div>
           <div class="featspecs"><span class="chip kind">${esc(t.kind)}</span>
             ${specs.map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>

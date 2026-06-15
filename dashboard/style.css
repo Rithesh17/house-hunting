@@ -427,3 +427,14 @@ main { padding: 10px clamp(18px, 4vw, 56px) 80px; }
 .featsum{font-size:13.5px;line-height:1.45;margin:2px 0 0;color:var(--ink,#3a3324)}
 .featrec{font-size:13px;line-height:1.4;margin:0;color:var(--accent,#2f7d4f);font-weight:600}
 @media (max-width:560px){.feat-grid{grid-template-columns:1fr}.feat-head h2{font-size:30px}}
+
+/* proximity-to-work + off-area (avoid) treatment */
+.prox{font-family:var(--mono,monospace);font-size:10.5px;letter-spacing:.04em;
+  color:var(--ink-faint,#7a6f59);border:1px solid rgba(0,0,0,.14);border-radius:3px;
+  padding:1px 6px;white-space:nowrap}
+.prox.avoid{color:#b23222;border-color:#b23222;text-transform:uppercase;font-weight:700}
+.card.offarea{opacity:.62}
+.card.offarea:hover{opacity:1}
+.card.offarea::after{content:"AVOID AREA";position:absolute;top:8px;left:8px;z-index:3;
+  background:#b23222;color:#fff;font-family:var(--mono,monospace);font-size:9px;
+  font-weight:700;letter-spacing:.08em;padding:2px 6px;border-radius:3px}
