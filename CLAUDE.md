@@ -9,12 +9,26 @@ mechanical work and personally do the **vision vetting + fit ranking**.
 - **Type:** **1 bed / 1 bath is the TOP priority.** A **spacious studio (≥450 sqft,
   full kitchen + bath)** is an acceptable fallback. **Reject shared rooms / SROs /
   tiny (~250 sqft) studios.**
-- **Areas (safe, peaceful, parks):** favorites **Inner Richmond** and **Inner
-  Sunset**; also good: West Portal/Forest Hill, Sunset/Parkside, Noe Valley,
-  Marina/Cow Hollow, Outer Richmond/Seacliff, Glen Park, Cole Valley, Laurel Hts.
-  **Avoid** Tenderloin / Nob Hill / SOMA / central.
-- Searches are configured in `config.yaml` (areas with Craigslist `nh` codes,
-  room-type passes, price cap, notify thresholds).
+- **Areas (safe, peaceful, parks/beach):** favorites **Inner Richmond** and
+  **Inner Sunset**; also good: West Portal/Forest Hill, Sunset/Parkside, Noe
+  Valley, Marina/Cow Hollow, Pacific Heights, Russian Hill, North Beach/Telegraph
+  Hill, Cole Valley, Glen Park, Bernal Heights, Potrero Hill, Outer
+  Richmond/Seacliff, Laurel/Presidio Hts. **AVOID** Tenderloin and everything
+  adjacent: Nob Hill / Lower Nob Hill, SoMa, Civic Center/Mid-Market, Union
+  Square/Downtown, Financial District core, Chinatown, plus Bayview/Hunters
+  Point and Visitacion Valley.
+- **Workplace = Transamerica Pyramid (FiDi).** Results are ordered by
+  **proximity to work, then by match score**. Avoid areas are heavily punished:
+  excluded from Featured + Telegram alerts and sunk to the bottom of the index.
+- **Area model is deterministic** (`scripts/geo.py` + the `geo:` block in
+  `config.yaml`): each listing is classified by COORDINATES into a tier
+  (preferred / acceptable / avoid) and an effective distance to work (with a
+  transit bonus for BART/Metro areas like Glen Park, West Portal). Subagents
+  should score `fit_score` on the UNIT itself (type/size/condition/value) and NOT
+  re-penalize the neighborhood — the geo model owns area. `area_tier` +
+  `proximity_km` are computed at sync time and stored in Supabase for ordering.
+- Searches are configured in `config.yaml` (areas, room-type passes, price cap,
+  notify thresholds, and the `geo:` area model).
 
 ## Trigger
 When the user says anything like *"fetch the latest listings,"* *"check
