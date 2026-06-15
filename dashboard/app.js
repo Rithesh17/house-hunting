@@ -35,10 +35,37 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 /* ----------------------------------------------------------- load */
+/* Reads directly from Supabase (PostgREST) with the public anon key. One row
+ * per deduped unit; photos come from remote `image_urls`, and the unit's other
+ * source posts are embedded in `sources`. Read-only — no backend. */
 async function load() {
-  LISTINGS = await (await fetch("/api/listings")).json();
+  const cfg = window.DASHBOARD_CONFIG || {};
+  const url = `${cfg.SUPABASE_URL}/rest/v1/listings?select=*`;
+  try {
+    const res = await fetch(url, {
+      headers: { apikey: cfg.SUPABASE_ANON_KEY,
+                 Authorization: `Bearer ${cfg.SUPABASE_ANON_KEY}` },
+    });
+    const rows = await res.json();
+    LISTINGS = (Array.isArray(rows) ? rows : []).map(normalize);
+  } catch (e) {
+    LISTINGS = [];
+    document.getElementById("list").innerHTML =
+      `<p class="empty">Couldn't reach the listings service. Try again shortly.</p>`;
+  }
   buildAreaMenu();
   render();
+}
+
+/* Shape a cloud row to what the renderer expects. */
+function normalize(d) {
+  d.photos = Array.isArray(d.image_urls) ? d.image_urls : [];
+  d.red_flags = Array.isArray(d.red_flags) ? d.red_flags : [];
+  const srcs = Array.isArray(d.sources) ? d.sources : [];
+  // `sources` includes the primary; expose the OTHER posts as `duplicates`
+  // (the dossier rebuilds the full best-first list from primary + duplicates).
+  d.duplicates = srcs.filter((s) => s.url && s.url !== d.url);
+  return d;
 }
 
 function buildAreaMenu() {
@@ -251,8 +278,7 @@ function openModal(id) {
   const gallery = (d.photos || []).map((p) => `<img src="${p}" alt="" referrerpolicy="no-referrer" onclick="window.open('${p}','_blank')" />`).join("");
   const flags = (d.red_flags && d.red_flags.length)
     ? `<div class="flags"><h4>⚑ Red flags</h4><ul>${d.red_flags.map((f) => `<li>${esc(f)}</li>`).join("")}</ul></div>` : "";
-  const statusBtns = ["new", "vetted", "interested", "contacted", "rejected"]
-    .map((s) => `<button class="${d.status === s ? "active" : ""}" onclick="setStatus('${d.id}','${s}')">${s}</button>`).join("");
+  const statusBadge = `<span class="statusbadge st-${esc(d.status || "new")}">${esc(d.status || "new")}</span>`;
   const specs = [];
   if (d.bedrooms != null) specs.push(d.bedrooms ? `${d.bedrooms} Bed` : "Studio");
   if (d.bathrooms != null) specs.push(`${d.bathrooms} Bath`);
@@ -302,8 +328,9 @@ function openModal(id) {
         ${d.verdict_summary ? `<h4>Assessment</h4><p>${esc(d.verdict_summary)}</p>` : ""}
         ${flags}
         ${d.recommendation ? `<h4>Recommendation</h4><p>${esc(d.recommendation)}</p>` : ""}
-        <h4>The listing, verbatim</h4>
-        <div class="desc">${esc(d.description || "(no description on file)")}</div>
+        <h4>The listing</h4>
+        <div class="desc">Full post text lives on the original listing —
+          <a href="${d.url}" target="_blank" rel="noopener">read it on ${esc(sourceLabel(d.source))} ↗</a>.</div>
       </div>
       <div class="vblock">
         <h4>Scores</h4>
@@ -312,7 +339,7 @@ function openModal(id) {
           <div class="scorebox"><div class="n">${d.fit_score ?? "—"}</div><div class="k">Match</div></div>
         </div>
         <h4 style="margin-top:16px">Disposition</h4>
-        <div class="status-row">${statusBtns}</div>
+        <div class="status-row">${statusBadge}</div>
       </div>
     </div>
     ${contactsHtml}
@@ -324,17 +351,6 @@ function openModal(id) {
   m.classList.remove("hidden"); m.setAttribute("aria-hidden", "false");
 }
 
-async function setStatus(id, status) {
-  const res = await fetch(`/api/listings/${id}/status`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ status }),
-  });
-  if (res.ok) {
-    const d = LISTINGS.find((x) => x.id === id);
-    if (d) d.status = status;
-    openModal(id); render();
-  }
-}
 function closeModal() {
   const m = document.getElementById("modal");
   m.classList.add("hidden"); m.setAttribute("aria-hidden", "true");
@@ -362,7 +378,7 @@ function init() {
   document.getElementById("modal-close").addEventListener("click", closeModal);
   document.getElementById("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
-  window.openModal = openModal; window.setStatus = setStatus;
+  window.openModal = openModal;
   load();
 }
 document.addEventListener("DOMContentLoaded", init);

@@ -377,3 +377,10 @@ main { padding: 10px clamp(18px, 4vw, 56px) 80px; }
   .filters { width: 100%; }
   .masthead h1 { font-size: 40px; }
 }
+
+/* read-only disposition badge (public dashboard) */
+.statusbadge{display:inline-block;padding:5px 12px;border:1px solid var(--ink-faint,#9a8e79);
+  border-radius:3px;font-family:var(--mono,monospace);font-size:12px;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--ink,#2b2417);background:rgba(0,0,0,.03)}
+.statusbadge.st-rejected{color:#b23222;border-color:#b23222}
+.statusbadge.st-interested,.statusbadge.st-contacted{color:#2f7d4f;border-color:#2f7d4f}
