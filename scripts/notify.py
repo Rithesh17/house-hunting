@@ -1,17 +1,18 @@
-"""Send a Telegram card for a vetted listing.
+"""Send ONE short, text-only Telegram digest of top listings (no images).
 
-Reads TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from .env. Sends the lead photo
-with a caption (price, type, neighborhood, legit + fit scores, scam notes, and
-links). Respects the notify thresholds unless --force is given.
+Each block is name + price/type + area + trust/match scores + a one-line summary
++ a deep-link into the dashboard (#id=<id>); a footer links the full ledger.
+Reads TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID and the dashboard URL from .env.
+Scams are always blocked; thresholds apply unless --force.
 
 Usage:
-    py scripts/notify.py <post_id> [--force]
-    py scripts/notify.py --all-qualifying    # every vetted, non-scam, un-notified
+    py scripts/notify.py --top 10            # the normal send: best N as one digest
+    py scripts/notify.py <id> [<id> ...] [--force]   # specific ids, one digest
+    py scripts/notify.py --all-qualifying    # every qualifying un-notified (can be a lot)
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 
@@ -26,7 +27,9 @@ load_dotenv(os.path.join(ROOT, ".env"))
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:8000")
+# Prefer the public Vercel dashboard for the "view it here" link; fall back local.
+DASHBOARD_URL = (os.getenv("VERCEL_DASHBOARD_URL")
+                 or os.getenv("DASHBOARD_URL", "http://localhost:8000")).rstrip("/")
 
 LABEL_EMOJI = {"likely-legit": "🟢", "unverified-amateur": "🟡", "likely-scam": "🔴"}
 
@@ -42,8 +45,9 @@ def qualifies(row, cfg: dict) -> bool:
     return True
 
 
-def build_minimal_caption(row) -> str:
-    """Essentials + a one-line summary and the original Craigslist link."""
+def _item_block(row) -> str:
+    """One compact, text-only block for a listing: name, price/type, area,
+    scores, a one-line summary, and a deep-link into the dashboard. No image."""
     d = db.row_to_dict(row)
     emoji = LABEL_EMOJI.get(d.get("legit_label"), "⚪")
     type_bits = []
@@ -55,49 +59,15 @@ def build_minimal_caption(row) -> str:
         type_bits.append(f"~{d['sqft']}sqft")
     type_str = " / ".join(type_bits)
 
-    lines = [
-        f"🏠 <b>{_h(d.get('title') or 'Listing')}</b>",
-        f"💵 ${d.get('price', '?')}" + (f"  ·  {_h(type_str)}" if type_str else ""),
-        f"📍 {_h(d.get('neighborhood') or d.get('area') or 'San Francisco')}",
-        f"{emoji} trust {d.get('legit_score','?')}%  |  ⭐ match {d.get('fit_score','?')}%",
-    ]
+    head = f"🏠 <b>{_h(d.get('title') or 'Listing')}</b>"
+    money = f"💵 ${d.get('price', '?')}" + (f" · {_h(type_str)}" if type_str else "")
+    place = (f"📍 {_h(d.get('neighborhood') or d.get('area') or 'San Francisco')}"
+             f"  ·  {emoji} {d.get('legit_score','?')} · ⭐ {d.get('fit_score','?')}")
+    lines = [head, money, place]
     if d.get("verdict_summary"):
         s = d["verdict_summary"]
-        lines.append(f"\n📝 {_h(s if len(s) <= 350 else s[:347] + '...')}")
-    if d.get("contact"):
-        lines.append(f"☎ {_h(d['contact'])}")
-    src = "Zumper" if d.get("source") == "zumper" else "Craigslist"
-    lines.append(f"\n🔗 View on {src}: {_h(d['url'])}")
-    return "\n".join(lines)
-
-
-def build_caption(row) -> str:
-    d = db.row_to_dict(row)
-    emoji = LABEL_EMOJI.get(d.get("legit_label"), "⚪")
-    type_bits = []
-    if d.get("bedrooms") is not None:
-        type_bits.append(f"{d['bedrooms']:g}BR")
-    if d.get("bathrooms") is not None:
-        type_bits.append(f"{d['bathrooms']:g}BA")
-    if d.get("sqft"):
-        type_bits.append(f"{d['sqft']}sqft")
-    type_str = " / ".join(type_bits) or (d.get("room_type") or "")
-
-    lines = [
-        f"🏠 <b>{_h(d.get('title') or 'Listing')}</b>",
-        f"💵 ${d.get('price', '?')}  |  {_h(type_str)}",
-        f"📍 {_h(d.get('neighborhood') or d.get('area') or '?')}",
-        f"{emoji} legit {d.get('legit_score','?')}%  |  ⭐ fit {d.get('fit_score','?')}%",
-    ]
-    if d.get("verdict_summary"):
-        lines.append(f"\n{_h(d['verdict_summary'])}")
-    if d.get("red_flags"):
-        lines.append("⚠️ " + _h("; ".join(d["red_flags"])))
-    if d.get("contact"):
-        lines.append(f"☎️ {_h(d['contact'])}")
-    src = "Zumper" if d.get("source") == "zumper" else "Craigslist"
-    lines.append(f"\n🔗 View on {src}: {_h(d['url'])}")
-    lines.append(f"🗺 Dashboard: {_h(DASHBOARD_URL)}")
+        lines.append(f"📝 {_h(s if len(s) <= 160 else s[:157] + '...')}")
+    lines.append(f"🔗 {_h(DASHBOARD_URL)}/#id={_h(d['id'])}")
     return "\n".join(lines)
 
 
@@ -107,46 +77,17 @@ def _h(text: str) -> str:
             .replace(">", "&gt;"))
 
 
-def lead_photo_url(row) -> str | None:
-    """First remote image URL (we no longer keep local copies)."""
-    if not row["image_urls"]:
-        return None
-    try:
-        photos = json.loads(row["image_urls"])
-        return photos[0] if photos else None
-    except (ValueError, TypeError):
-        return None
-
-
-def send(row, minimal: bool = False) -> bool:
+def send_text(text: str) -> bool:
+    """Send one plain HTML text message (no image)."""
     if not TOKEN or not CHAT_ID:
         print("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set in .env — skipping.",
               file=sys.stderr)
         return False
-    caption = build_minimal_caption(row) if minimal else build_caption(row)
-    photo = lead_photo_url(row)
-    # Fetch the image bytes ourselves (Telegram's server can't fetch some hosts
-    # e.g. Craigslist) and upload them — works for any source, no local storage.
-    img_bytes = None
-    if photo:
-        try:
-            ir = requests.get(photo, timeout=30, headers={
-                "User-Agent": "Mozilla/5.0", "Referer": "https://www.zumper.com/"})
-            if ir.status_code == 200 and ir.content:
-                img_bytes = ir.content
-        except requests.exceptions.RequestException:
-            pass
     try:
-        if img_bytes:
-            r = requests.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
-                data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
-                files={"photo": ("photo.jpg", img_bytes)}, timeout=30)
-        else:
-            r = requests.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                data={"chat_id": CHAT_ID, "text": caption, "parse_mode": "HTML",
-                      "disable_web_page_preview": True}, timeout=30)
+        r = requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML",
+                  "disable_web_page_preview": True}, timeout=30)
         if r.status_code != 200:
             print(f"Telegram error {r.status_code}: {r.text}", file=sys.stderr)
             return False
@@ -156,50 +97,96 @@ def send(row, minimal: bool = False) -> bool:
     return True
 
 
+def _chunk_blocks(header: str, blocks: list[str], footer: str,
+                  limit: int = 3900) -> list[str]:
+    """Pack header + blocks + footer into as few <=limit-char messages as
+    possible (Telegram's hard cap is 4096)."""
+    msgs, cur = [], [header]
+    for b in blocks:
+        candidate = "\n\n".join(cur + [b])
+        if len(candidate) > limit and len(cur) > 1:
+            msgs.append("\n\n".join(cur))
+            cur = [b]
+        else:
+            cur.append(b)
+    cur.append(footer)
+    msgs.append("\n\n".join(cur))
+    return msgs
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("id", nargs="?")
+    ap.add_argument("id", nargs="*", help="one or more post ids")
     ap.add_argument("--force", action="store_true",
                     help="send even if below thresholds (still blocks scams)")
+    ap.add_argument("--top", type=int, metavar="N",
+                    help="digest the top N qualifying, deduped picks (best by "
+                         "match+trust) — the normal way to send")
     ap.add_argument("--all-qualifying", action="store_true",
-                    help="notify every vetted, qualifying, un-notified listing")
+                    help="digest EVERY vetted, qualifying, un-notified listing "
+                         "(can be a lot — prefer --top N)")
     ap.add_argument("--minimal", action="store_true",
-                    help="send a minimal card (photo + title + price + trust)")
+                    help="(kept for back-compat; notifications are always short text)")
     args = ap.parse_args()
 
     cfg = common.load_config()
     conn = db.connect()
 
-    if args.all_qualifying:
+    if args.top:
+        rows = conn.execute(
+            "SELECT * FROM listings WHERE status!='rejected' AND legit_score IS NOT NULL"
+        ).fetchall()
+        # only cluster primaries (dup_group null or == id), qualifying, best first
+        prim = [r for r in rows if r["dup_group"] in (None, r["id"])]
+        q = [r for r in prim if qualifies(r, cfg)]
+        q.sort(key=lambda r: ((r["fit_score"] or 0) + (r["legit_score"] or 0),
+                              (r["fit_score"] or -1)), reverse=True)
+        targets = q[:args.top]
+    elif args.all_qualifying:
         rows = conn.execute(
             "SELECT * FROM listings WHERE status!='rejected' AND notified=0 "
             "AND legit_score IS NOT NULL"
         ).fetchall()
         targets = [r for r in rows if qualifies(r, cfg)]
     elif args.id:
-        row = db.get(conn, args.id)
-        if not row:
-            print(f"No listing {args.id}", file=sys.stderr)
-            sys.exit(1)
-        if not args.force and not qualifies(row, cfg):
-            print(f"{args.id} does not meet thresholds (use --force).")
-            sys.exit(0)
-        if args.force and (row["legit_label"] or "") == "likely-scam":
-            print("Refusing to notify a likely-scam listing.", file=sys.stderr)
-            sys.exit(1)
-        targets = [row]
+        targets = []
+        for pid in args.id:
+            row = db.get(conn, pid)
+            if not row:
+                print(f"No listing {pid}", file=sys.stderr)
+                continue
+            if (row["legit_label"] or "") == "likely-scam":
+                print(f"Skipping likely-scam {pid}.", file=sys.stderr)
+                continue
+            if not args.force and not qualifies(row, cfg):
+                print(f"{pid} below thresholds (use --force); skipping.")
+                continue
+            targets.append(row)
     else:
-        ap.error("give a post id or --all-qualifying")
+        ap.error("give one or more post ids or --all-qualifying")
 
-    sent = 0
-    for row in targets:
-        if send(row, minimal=args.minimal):
+    if not targets:
+        conn.close()
+        print("Nothing to notify.")
+        return
+
+    # rank best-first (match, then trust) and send ONE digest (chunked if huge)
+    targets.sort(key=lambda r: ((r["fit_score"] or -1), (r["legit_score"] or -1)),
+                 reverse=True)
+    n = len(targets)
+    header = f"🏠 <b>SF House-Hunt — {n} top pick{'s' if n != 1 else ''}</b>"
+    footer = f"🗺 Full ledger: {_h(DASHBOARD_URL)}"
+    messages = _chunk_blocks(header, [_item_block(r) for r in targets], footer)
+
+    sent_all = all(send_text(m) for m in messages)
+    if sent_all:
+        for row in targets:
             db.mark_notified(conn, row["id"])
-            conn.commit()
-            sent += 1
-            print(f"  ✓ notified {row['id']}")
+        conn.commit()
+        print(f"Sent digest of {n} listing(s) in {len(messages)} message(s).")
+    else:
+        print("Digest send failed; not marking notified.", file=sys.stderr)
     conn.close()
-    print(f"Sent {sent} notification(s).")
 
 
 if __name__ == "__main__":
