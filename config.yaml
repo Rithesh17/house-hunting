@@ -47,6 +47,54 @@ areas:
 include_unspecified_sf: true
 unspecified_area_name: "(unspecified SF)"
 
+# --------------------------------------------------------------------------
+# GEO MODEL — used by scripts/geo.py to classify every listing by COORDINATES
+# (the area text is often missing/wrong) into an area tier and a proximity to
+# the user's workplace. This drives ranking: results are ordered by proximity
+# to work, THEN by match score, with `avoid` areas heavily punished (sunk below
+# everything, badged, and excluded from Featured + Telegram alerts).
+geo:
+  # Workplace: Transamerica Pyramid (Financial District).
+  work: { name: "Transamerica Pyramid", lat: 37.7952, lng: -122.4028 }
+
+  # Areas to AVOID living in — Tenderloin and everything adjacent/rough/unsafe,
+  # plus dense non-residential cores. A listing whose coords fall within
+  # radius_km of any of these is tier 'avoid' (even a few "ok" TL blocks: the
+  # user prefers to avoid the whole area).
+  avoid_zones:
+    - { name: "Tenderloin",                 lat: 37.7836, lng: -122.4135, radius_km: 0.85 }
+    - { name: "Civic Center / Mid-Market",  lat: 37.7793, lng: -122.4172, radius_km: 0.70 }
+    - { name: "SoMa",                       lat: 37.7785, lng: -122.4050, radius_km: 1.00 }
+    - { name: "Union Square / Downtown",    lat: 37.7880, lng: -122.4070, radius_km: 0.45 }
+    - { name: "Financial District core",    lat: 37.7950, lng: -122.4010, radius_km: 0.55 }
+    - { name: "Nob Hill / Lower Nob Hill",  lat: 37.7905, lng: -122.4150, radius_km: 0.60 }
+    - { name: "Chinatown",                  lat: 37.7941, lng: -122.4078, radius_km: 0.35 }
+    - { name: "Bayview / Hunters Point",    lat: 37.7299, lng: -122.3890, radius_km: 1.80 }
+    - { name: "Visitacion Valley",          lat: 37.7155, lng: -122.4050, radius_km: 1.20 }
+
+  # Preferred residential areas (calm, safe, parks or beach nearby). Each has a
+  # rough centroid; a listing within match_radius_km of one is tier 'preferred'.
+  # `transit_bonus_km` shrinks the effective distance for areas with fast rail to
+  # downtown (BART/Metro to Montgomery), so e.g. Glen Park ranks near despite the
+  # miles. Everything else in SF (not avoid, not preferred) is tier 'acceptable'.
+  preferred_match_radius_km: 1.8
+  preferred:
+    - { name: "North Beach / Telegraph Hill", lat: 37.8005, lng: -122.4100 }
+    - { name: "Russian Hill",                 lat: 37.8010, lng: -122.4180 }
+    - { name: "Marina / Cow Hollow",          lat: 37.8005, lng: -122.4360 }
+    - { name: "Pacific Heights",              lat: 37.7925, lng: -122.4380 }
+    - { name: "Presidio Heights / Laurel Hts", lat: 37.7880, lng: -122.4470 }
+    - { name: "Potrero Hill",                 lat: 37.7580, lng: -122.4005 }
+    - { name: "Noe Valley",                   lat: 37.7510, lng: -122.4330 }
+    - { name: "Cole Valley / Ashbury Hts",    lat: 37.7660, lng: -122.4480 }
+    - { name: "Glen Park",                    lat: 37.7340, lng: -122.4340, transit_bonus_km: 3.0 }
+    - { name: "Bernal Heights",               lat: 37.7390, lng: -122.4150 }
+    - { name: "Inner Richmond",               lat: 37.7800, lng: -122.4640 }
+    - { name: "Inner Sunset / UCSF",          lat: 37.7630, lng: -122.4660 }
+    - { name: "West Portal / Forest Hill",    lat: 37.7400, lng: -122.4660, transit_bonus_km: 2.5 }
+    - { name: "Outer Richmond / Seacliff",    lat: 37.7785, lng: -122.4880 }
+    - { name: "Sunset / Parkside",            lat: 37.7480, lng: -122.4940 }
+
 # PULL PHILOSOPHY: pull broadly (almost all of SF, price-capped, no office/parking),
 # then let SUBAGENTS manually read each post and filter rooms / tag scams / judge
 # fit. We do NOT script-filter rooms or scams — only two objective, no-false-

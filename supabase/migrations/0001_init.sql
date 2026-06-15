@@ -30,6 +30,9 @@ create table if not exists public.listings (
     verdict_summary text,
     recommendation  text,
     status          text,
+    -- area model (scripts/geo.py): tier vs the user's prefs + proximity to work --
+    area_tier       text,           -- 'preferred' | 'acceptable' | 'avoid'
+    proximity_km    real,           -- effective distance to workplace (avoid = 999)
     -- dedup: one row per unit; duplicate source posts embedded here --
     dup_count       integer default 1,
     sources         jsonb default '[]'::jsonb,   -- [{url,source,price,fit_score,legit_score,legit_label,area}]
