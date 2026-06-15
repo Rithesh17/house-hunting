@@ -51,15 +51,38 @@ This is the full cycle. Run it end to end:
 3. `py tools/apply_verdicts.py` (merges the batch files; reject rooms/etc., keep
    scams flagged), then delete the batch files.
 4. `py tools/dedup.py` (re-cluster with the new verdicts so primaries are best).
-5. **Telegram top picks.** `py tools/toppicks.py 10` prints the top primary
+5. `py scripts/sync_supabase.py` — **publish to the cloud** so the public
+   dashboard updates (re-run after vetting so new scores/dedup land). `refresh.py`
+   already runs this once at the end; run it again here after `apply_verdicts`.
+6. **Telegram top picks.** `py tools/toppicks.py 10` prints the top primary
    (deduped, non-scam) ids by match; send each:
    `py scripts/notify.py <id> --minimal --force`. (Or `notify.py --all-qualifying`
    for every new qualifier.) Cards upload the photo BYTES we fetch ourselves
    (Telegram can't fetch Craigslist image hosts) and use HTML parse mode; each
    card has a summary + the source link (Craigslist/Zumper).
-6. `py tools/purge_images.py --all` — drop the transient local photos.
-7. Summarize the standouts in chat; dashboard at http://localhost:8000.
-If `refresh.py` reports 0 new, just stop — nothing to vet.
+7. `py tools/purge_images.py --all` — drop the transient local photos.
+8. Summarize the standouts in chat; public dashboard at the Vercel URL
+   (`VERCEL_DASHBOARD_URL` in `.env`).
+If `refresh.py` reports 0 new, just stop — nothing to vet (the cloud was still
+re-synced for prunes/dedup).
+
+## Architecture — local engine, cloud read-model
+The pipeline runs **locally** here (Claude Code): fetch → vet → dedup write to the
+local SQLite (`data/listings.db`, the source of truth, gitignored). `sync_supabase.py`
+then pushes a **minimal** read-model to **Supabase** (Postgres): one row per
+deduped unit with identity + display essentials + remote `image_urls` + Claude's
+verdict (scores/summary/recommendation/red_flags) + an embedded `sources` list.
+The verbatim post body is NOT uploaded — the dossier links out to the source post
+(keeps the free-tier DB small). Schema: `supabase/migrations/0001_init.sql`
+(RLS = anon SELECT only; the local sync writes with the service_role key).
+The **dashboard is a static site on Vercel** (`dashboard/`, Hobby/free) that reads
+Supabase directly with the public anon key (`dashboard/config.js`). It is
+**read-only** — manage status locally (`py scripts/db.py set-status …`) then
+`sync_supabase.py`. **Redeploy Vercel ONLY when the dashboard view changes**
+(edits in `dashboard/`): `vercel deploy ./dashboard --prod --yes`. Data-only
+updates need just `sync_supabase.py` — no redeploy. Keep both on free tier (no
+paid Vercel/Supabase compute). The local Flask `serve.py` remains for offline
+viewing of the local DB but is no longer the dashboard's data source.
 
 ## Pipeline detail (philosophy: pull broad, filter by JUDGMENT via subagents)
 1. **Discover broadly (almost all of SF).**
@@ -191,8 +214,10 @@ do not penalize.
 - `scripts/fetch_detail.py` — parse post + download photos.
 - `scripts/save_verdict.py` — persist your verdict.
 - `scripts/notify.py` — Telegram cards (thresholded; scams blocked).
-- `scripts/serve.py` — local map dashboard (http://localhost:8000).
+- `scripts/sync_supabase.py` — publish the minimal cloud read-model to Supabase.
+- `scripts/serve.py` — local map dashboard of the LOCAL db (http://localhost:8000).
 - `scripts/db.py` — SQLite schema + CLI (`init`, `list`, `show`, `set-status`).
+- `dashboard/` — static public dashboard (Vercel) reading Supabase via anon key.
 
 ## Notes
 - Be polite to Craigslist (the scripts set a UA + delay). Fetch details only for
