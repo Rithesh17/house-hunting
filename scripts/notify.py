@@ -39,10 +39,6 @@ def _tier(row) -> str:
     return geo.classify(row["lat"], row["lng"], row["area"])["area_tier"]
 
 
-def _prox(row) -> float:
-    return geo.classify(row["lat"], row["lng"], row["area"])["proximity_km"]
-
-
 def qualifies(row, cfg: dict) -> bool:
     n = cfg.get("notify", {})
     if (row["legit_label"] or "") == "likely-scam":
@@ -57,8 +53,9 @@ def qualifies(row, cfg: dict) -> bool:
 
 
 def _rank_key(row) -> tuple:
-    """Order by proximity to work asc, then match desc, then trust desc."""
-    return (_prox(row), -(row["fit_score"] or 0), -(row["legit_score"] or 0))
+    """Order by MATCH desc, then trust desc. (Area is handled by qualifies(),
+    which already drops avoid/unsafe areas; the user ranks purely on match.)"""
+    return (-(row["fit_score"] or 0), -(row["legit_score"] or 0))
 
 
 def _item_block(row) -> str:
@@ -76,11 +73,9 @@ def _item_block(row) -> str:
     type_str = " / ".join(type_bits)
 
     area = geo.classify(d.get("lat"), d.get("lng"), d.get("area"))
-    prox = area["dist_km"]
-    prox_str = f" · ~{prox:g}km to work" if prox is not None else ""
     head = f"🏠 <b>{_h(d.get('title') or 'Listing')}</b>"
     money = f"💵 ${d.get('price', '?')}" + (f" · {_h(type_str)}" if type_str else "")
-    place = (f"📍 {_h(area['area_name'] or d.get('area') or 'San Francisco')}{prox_str}"
+    place = (f"📍 {_h(area['area_name'] or d.get('area') or 'San Francisco')}"
              f"  ·  {emoji} {d.get('legit_score','?')} · ⭐ {d.get('fit_score','?')}")
     lines = [head, money, place]
     if d.get("verdict_summary"):

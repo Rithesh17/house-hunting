@@ -31,15 +31,8 @@ const TRUST = {
 };
 function trust(d) { return TRUST[d.legit_label] || { cls: "t-amateur", label: "Unrated" }; }
 
-/* Area model: proximity to work (avoid areas sink), tier flag, distance label. */
-const proxOf = (d) => (d.area_tier === "avoid" ? 9999 : (d.proximity_km ?? 500));
+/* Area model: only the unsafe/unclean ("avoid") tier is penalized. */
 const isAvoid = (d) => d.area_tier === "avoid";
-function proxLabel(d) {
-  if (isAvoid(d)) return "off-area · avoid";
-  if (d.proximity_km == null) return "";
-  const km = Math.round(d.proximity_km * 10) / 10;
-  return `~${km} km to work`;
-}
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -136,16 +129,18 @@ function selection() {
     if (SELECTED_AREAS.size && !SELECTED_AREAS.has(d.area)) return false;
     return true;
   });
-  const prio = (d) => (d.room_type === "1br" ? 0 : d.room_type === "studio" ? 1 : 2);
-  const cmp = {
-    proximity: (a, b) => proxOf(a) - proxOf(b) || (b.fit_score ?? -1) - (a.fit_score ?? -1),
-    fit: (a, b) => prio(a) - prio(b) || (b.fit_score ?? -1) - (a.fit_score ?? -1),
+  // Unsafe/unclean ("avoid") areas are penalized: they always sort below
+  // everything else, regardless of the chosen sort. Within each group we use
+  // the selected key — by default, match score (the user ranks purely on match).
+  const aRank = (d) => (isAvoid(d) ? 1 : 0);
+  const byKey = {
+    match: (a, b) => (b.fit_score ?? -1) - (a.fit_score ?? -1),
     legit: (a, b) => (b.legit_score ?? -1) - (a.legit_score ?? -1),
     "price-asc": (a, b) => (a.price ?? 1e9) - (b.price ?? 1e9),
     "price-desc": (a, b) => (b.price ?? -1) - (a.price ?? -1),
     newest: (a, b) => (b.first_seen_at || "").localeCompare(a.first_seen_at || ""),
-  }[f.sort];
-  return out.sort(cmp);
+  }[f.sort] || ((a, b) => (b.fit_score ?? -1) - (a.fit_score ?? -1));
+  return out.sort((a, b) => aRank(a) - aRank(b) || byKey(a, b));
 }
 
 function render() {
@@ -223,7 +218,7 @@ function renderList(items) {
       <div class="body">
         <h3 class="title">${esc(d.title || "Untitled entry")}</h3>
         <div class="hood"><span class="pin">◈</span> ${esc(d.area || d.neighborhood || "San Francisco")}
-          ${proxLabel(d) ? `<span class="prox${isAvoid(d) ? " avoid" : ""}">${esc(proxLabel(d))}</span>` : ""}
+          ${isAvoid(d) ? `<span class="prox avoid">unsafe area</span>` : ""}
           <span class="srctag">${sourceLabel(d.source)}${d.dup_count > 1 ? " +" + (d.dup_count - 1) : ""}</span></div>
         <div class="specs">
           <span class="chip kind">${esc(t.kind)}</span>
@@ -298,8 +293,7 @@ function featuredItems() {
       d.legit_label !== "likely-scam" && !isAvoid(d) &&
       (d.fit_score ?? 0) >= 70 && (d.legit_score ?? 0) >= 70)
     .sort((a, b) =>
-      proxOf(a) - proxOf(b) ||  // closest to work first, then best match
-      ((b.fit_score + b.legit_score) - (a.fit_score + a.legit_score)) ||
+      ((b.fit_score + b.legit_score) - (a.fit_score + a.legit_score)) ||  // best match+trust
       ((a.price ?? 1e9) - (b.price ?? 1e9)))
     .slice(0, 12);
 }
@@ -315,8 +309,8 @@ function renderFeatured() {
   el.innerHTML = `
     <div class="feat-head">
       <h2>Featured</h2>
-      <p>The strongest entries on file — high trust <em>and</em> high match in
-        good areas, ordered by proximity to work. ${items.length} of them.</p>
+      <p>The strongest entries on file — high match <em>and</em> high trust in
+        safe areas, best first. ${items.length} of them.</p>
     </div>
     <div class="feat-grid">` +
     items.map((d, i) => {
@@ -337,7 +331,6 @@ function renderFeatured() {
         <div class="featbody">
           <h3>${esc(d.title || "Untitled entry")}</h3>
           <div class="feathood"><span class="pin">◈</span> ${esc(d.area || d.neighborhood || "San Francisco")}
-            ${proxLabel(d) ? `<span class="prox">${esc(proxLabel(d))}</span>` : ""}
             <span class="srctag">${esc(sourceLabel(d.source))}</span></div>
           <div class="featspecs"><span class="chip kind">${esc(t.kind)}</span>
             ${specs.map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>

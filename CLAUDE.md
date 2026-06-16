@@ -17,16 +17,19 @@ mechanical work and personally do the **vision vetting + fit ranking**.
   adjacent: Nob Hill / Lower Nob Hill, SoMa, Civic Center/Mid-Market, Union
   Square/Downtown, Financial District core, Chinatown, plus Bayview/Hunters
   Point and Visitacion Valley.
-- **Workplace = Transamerica Pyramid (FiDi).** Results are ordered by
-  **proximity to work, then by match score**. Avoid areas are heavily punished:
-  excluded from Featured + Telegram alerts and sunk to the bottom of the index.
+- **Ranking = by MATCH score.** The user prefers good areas (e.g. Richmond) even
+  if far, so we do NOT order by proximity to work. Sort purely by match (fit),
+  then trust. The ONLY area effect is a penalty on **unsafe/unclean ("avoid")
+  areas**: they are excluded from Featured + Telegram alerts and sunk to the
+  bottom of the index, badged "AVOID". Preferred vs acceptable areas are treated
+  equally (ranked by match).
 - **Area model is deterministic** (`scripts/geo.py` + the `geo:` block in
   `config.yaml`): each listing is classified by COORDINATES into a tier
-  (preferred / acceptable / avoid) and an effective distance to work (with a
-  transit bonus for BART/Metro areas like Glen Park, West Portal). Subagents
-  should score `fit_score` on the UNIT itself (type/size/condition/value) and NOT
-  re-penalize the neighborhood — the geo model owns area. `area_tier` +
-  `proximity_km` are computed at sync time and stored in Supabase for ordering.
+  (preferred / acceptable / avoid). Only the `avoid` tier matters for ranking now
+  (the safety penalty). Subagents score `fit_score` on the UNIT itself
+  (type/size/condition/value) and do NOT weight the neighborhood — the geo model
+  owns area. `area_tier` is computed at sync time and stored in Supabase.
+  (`proximity_km` is still computed/stored but no longer used for ordering.)
 - Searches are configured in `config.yaml` (areas, room-type passes, price cap,
   notify thresholds, and the `geo:` area model).
 
