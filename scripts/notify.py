@@ -6,7 +6,11 @@ Reads TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID and the dashboard URL from .env.
 Scams are always blocked; thresholds apply unless --force.
 
 Usage:
-    py scripts/notify.py --top 10            # the normal send: best N as one digest
+    py scripts/notify.py --new               # the normal refresh send: qualifying
+                                             # NEW (un-notified) picks, best first;
+                                             # if none qualify, a short "nothing
+                                             # worthy today" note instead.
+    py scripts/notify.py --top 10            # best N overall as one digest
     py scripts/notify.py <id> [<id> ...] [--force]   # specific ids, one digest
     py scripts/notify.py --all-qualifying    # every qualifying un-notified (can be a lot)
 """
@@ -133,9 +137,13 @@ def main() -> None:
     ap.add_argument("id", nargs="*", help="one or more post ids")
     ap.add_argument("--force", action="store_true",
                     help="send even if below thresholds (still blocks scams)")
+    ap.add_argument("--new", action="store_true",
+                    help="digest the qualifying NEW (un-notified) picks from "
+                         "this fetch, best first; if none qualify, send a short "
+                         "'nothing worthy today' note. The normal refresh send.")
     ap.add_argument("--top", type=int, metavar="N",
                     help="digest the top N qualifying, deduped picks (best by "
-                         "match+trust) — the normal way to send")
+                         "match+trust) — best overall, regardless of new-ness")
     ap.add_argument("--all-qualifying", action="store_true",
                     help="digest EVERY vetted, qualifying, un-notified listing "
                          "(can be a lot — prefer --top N)")
@@ -146,7 +154,15 @@ def main() -> None:
     cfg = common.load_config()
     conn = db.connect()
 
-    if args.top:
+    if args.new:
+        # qualifying NEW (un-notified) primaries from this fetch, best first
+        rows = conn.execute(
+            "SELECT * FROM listings WHERE status!='rejected' AND notified=0 "
+            "AND legit_score IS NOT NULL"
+        ).fetchall()
+        prim = [r for r in rows if r["dup_group"] in (None, r["id"])]
+        targets = [r for r in prim if qualifies(r, cfg)]
+    elif args.top:
         rows = conn.execute(
             "SELECT * FROM listings WHERE status!='rejected' AND legit_score IS NOT NULL"
         ).fetchall()
@@ -176,17 +192,28 @@ def main() -> None:
                 continue
             targets.append(row)
     else:
-        ap.error("give one or more post ids or --all-qualifying")
+        ap.error("give one or more post ids, --new, --top N, or --all-qualifying")
 
     if not targets:
+        # For the routine --new send, still ping so the user knows the fetch ran
+        # and found nothing worth a look; otherwise just stay quiet.
+        if args.new:
+            note = ("🏠 <b>SF House-Hunt</b>\nNo new postings worth a look this "
+                    f"round.\n\n🗺 Full ledger: {_h(DASHBOARD_URL)}")
+            if send_text(note):
+                print("Sent 'nothing worthy this round' note.")
+            else:
+                print("Note send failed.", file=sys.stderr)
+        else:
+            print("Nothing to notify.")
         conn.close()
-        print("Nothing to notify.")
         return
 
     # rank by proximity to work, then match, then trust; send ONE digest
     targets.sort(key=_rank_key)
     n = len(targets)
-    header = f"🏠 <b>SF House-Hunt — {n} top pick{'s' if n != 1 else ''}</b>"
+    kind = "new pick" if args.new else "top pick"
+    header = f"🏠 <b>SF House-Hunt — {n} {kind}{'s' if n != 1 else ''}</b>"
     footer = f"🗺 Full ledger: {_h(DASHBOARD_URL)}"
     messages = _chunk_blocks(header, [_item_block(r) for r in targets], footer)
 

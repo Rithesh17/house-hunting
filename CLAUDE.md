@@ -71,13 +71,16 @@ This is the full cycle. Run it end to end:
 5. `py scripts/sync_supabase.py` — **publish to the cloud** so the public
    dashboard updates (re-run after vetting so new scores/dedup land). `refresh.py`
    already runs this once at the end; run it again here after `apply_verdicts`.
-6. **Telegram top picks — ONE digest of the top 5.** `py scripts/notify.py --top 5`
-   sends a single short, text-only message: each pick = name + price/type + area +
-   trust/match + a one-line summary + a dashboard deep-link (`#id=<id>`), with a
-   footer linking the full ledger. NO images, top 5 only (the user wants a tight
-   list, not the whole backlog). (Or pass explicit ids:
-   `py scripts/notify.py <id> <id> ... --force`.) Never use `--all-qualifying` for
-   routine sends. Scams are always blocked.
+6. **Telegram — ONE digest of the qualifying NEW picks from this fetch.**
+   `py scripts/notify.py --new` sends a single short, text-only message of the
+   un-notified, qualifying picks from this fetch (NOT the top-N overall): each =
+   name + price/type + area + trust/match + a one-line summary + a dashboard
+   deep-link (`#id=<id>`), with a footer linking the full ledger. NO images. If
+   NOTHING new qualifies, it sends a brief "no new postings worth a look this
+   round" note (still ending with the dashboard link) so the user knows the fetch
+   ran. (Or pass explicit ids: `py scripts/notify.py <id> <id> ... --force`;
+   `--top N` still exists for a best-overall digest.) Never use `--all-qualifying`
+   for routine sends. Scams are always blocked.
 7. `py tools/purge_images.py --all` — drop the transient local photos.
 8. Summarize the standouts in chat; public dashboard at the Vercel URL
    (`VERCEL_DASHBOARD_URL` in `.env`).
