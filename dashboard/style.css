@@ -90,6 +90,35 @@ body {
   background: rgba(243,236,221,.86); backdrop-filter: blur(8px);
   border-bottom: 1.5px solid var(--rule-bold);
 }
+/* search ------------------------------------------------------ */
+.searchbar {
+  flex: 1 1 100%; display: flex; align-items: center; gap: 10px;
+  border: 1.5px solid var(--rule-bold); background: var(--card);
+  padding: 7px 12px; box-shadow: var(--shadow);
+}
+.searchicon { font-size: 14px; opacity: .7; line-height: 1; }
+#search {
+  flex: 1; min-width: 0; border: none; background: none;
+  font-family: var(--serif); font-size: 17px; color: var(--ink);
+  padding: 2px 0;
+}
+#search::placeholder { color: var(--ink-faint); font-style: italic; }
+#search:focus { outline: none; }
+#search::-webkit-search-cancel-button { display: none; }
+.search-clear {
+  border: none; background: none; cursor: pointer; color: var(--ink-faint);
+  font-size: 14px; padding: 2px 4px; line-height: 1;
+}
+.search-clear:hover { color: var(--ink); }
+.search-status {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
+  color: var(--ink-faint); white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .search-status { display: none; }
+  #search { font-size: 15px; }
+}
+
 .views { display: flex; gap: 4px; }
 .vtab {
   font-family: var(--serif); font-style: italic; font-size: 19px; font-weight: 600;

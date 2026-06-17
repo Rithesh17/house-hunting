@@ -37,6 +37,26 @@ winners to **Telegram**, and plots everything on a **local map dashboard**.
    the full gallery + scam notes, and mark listings interested / contacted /
    rejected.
 
+## Search the dashboard
+One search bar blends two signals into a single ranked list:
+
+![Searching the property register — exact matches first, then related by meaning](docs/search-demo.gif)
+
+- **Full-text first** — exact keyword hits across the title, neighborhood,
+  address, and Claude's assessment/recommendation. These are the surest matches,
+  so they rank at the top and appear instantly as you type.
+- **Semantic next** — the rest of the list is filled in by *meaning*: listings
+  that are close in concept to your query (e.g. *"sunset studio"* also surfaces
+  garden studios near Ocean Beach) are ranked by confidence below the exact hits.
+  Only confident matches are shown.
+
+Semantic matching runs **entirely in your browser** (transformers.js + a small
+MiniLM embedding model) — no backend, no API keys, nothing added to the cloud
+database. The first search downloads the model (~25 MB, cached afterward) and
+builds a vector index of the listings (cached in IndexedDB, so later visits are
+instant); keyword results show immediately while that loads. When a search is
+active, results are ranked by relevance and the Sort control is dimmed.
+
 ## Configuration
 Edit [`config.yaml`](config.yaml): price cap, the list of areas (with Craigslist
 `nh` neighborhood codes) and their weights, room-type passes, the spacious-studio
