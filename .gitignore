@@ -28,3 +28,5 @@ supabase/.branches/
 # os
 Thumbs.db
 .DS_Store
+.vercel
+.env*
