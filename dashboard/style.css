@@ -110,12 +110,7 @@ body {
   font-size: 14px; padding: 2px 4px; line-height: 1;
 }
 .search-clear:hover { color: var(--ink); }
-.search-status {
-  font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
-  color: var(--ink-faint); white-space: nowrap;
-}
 @media (max-width: 640px) {
-  .search-status { display: none; }
   #search { font-size: 15px; }
 }
 
@@ -462,6 +457,7 @@ main { padding: 10px clamp(18px, 4vw, 56px) 80px; }
   color:var(--ink-faint,#7a6f59);border:1px solid rgba(0,0,0,.14);border-radius:3px;
   padding:1px 6px;white-space:nowrap}
 .prox.avoid{color:#b23222;border-color:#b23222;text-transform:uppercase;font-weight:700}
+.prox.fav{color:#2f7d4f;border-color:#2f7d4f;text-transform:uppercase;font-weight:700}
 .card.offarea{opacity:.62}
 .card.offarea:hover{opacity:1}
 .card.offarea::after{content:"AVOID AREA";position:absolute;top:8px;left:8px;z-index:3;

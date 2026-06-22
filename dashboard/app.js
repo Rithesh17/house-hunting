@@ -16,14 +16,11 @@ function sourceLabel(s) { return SOURCE[s] || (s ? s[0].toUpperCase() + s.slice(
 let SELECTED_AREAS = new Set();
 
 /* ----------------------------------------------------------- search state */
-// ONE search box that blends two signals: full-text (exact keyword) matches rank
-// first, then semantic (meaning-based) matches below them. Semantic runs ENTIRELY
-// in the browser (transformers.js + MiniLM) — nothing is added to the cloud row.
-// Listing vectors are computed once and cached in IndexedDB; the query is embedded
-// on demand and compared by cosine similarity. Keyword matches show instantly; the
-// semantic half is blended in once its scores are ready.
+// ONE search box, two purely text-based signals (both instant, no network/model):
+//   1. full-text  — rows that contain EVERY query term (ranked first)
+//   2. fuzzy      — rows that contain SOME query term (ranked below)
+// Both are ordered by a simple relevance score (title hits weighted over body).
 let SEARCH_Q = "";            // current query text
-const SEM = { model: null, vectors: null, scores: {}, queryFor: null, error: false };
 
 /* The text we search over. The verbatim post body is NOT in the cloud (by
  * design), so we index the fields we DO have: title, area, address + Claude's
@@ -34,13 +31,11 @@ function searchText(d) {
           typeOf(d).kind]
     .filter(Boolean).join(" · ");
 }
-function strHash(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return h; }
 function textRelevance(d, toks) {
   const title = (d.title || "").toLowerCase(), body = searchText(d).toLowerCase();
   let s = 0; for (const tk of toks) { if (title.includes(tk)) s += 3; else if (body.includes(tk)) s += 1; }
   return s;
 }
-function setSearchStatus(s) { const el = document.getElementById("search-status"); if (el) el.textContent = s || ""; }
 
 /* Semantic color: green→amber→red by SCORE (used for match + trust, not type). */
 function scoreColor(s) {
@@ -58,8 +53,13 @@ const TRUST = {
 };
 function trust(d) { return TRUST[d.legit_label] || { cls: "t-amateur", label: "Unrated" }; }
 
-/* Area model: only the unsafe/unclean ("avoid") tier is penalized. */
+/* Area model: the user's top picks ("favorite" tier) float to the top; the
+ * unsafe/unclean ("avoid") tier is sunk to the bottom. Everything else is in
+ * the middle, ranked by match. */
 const isAvoid = (d) => d.area_tier === "avoid";
+const isFav = (d) => d.area_tier === "favorite";
+/* Group rank for ordering: 0 = favorite (top), 1 = normal, 2 = avoid (bottom). */
+const areaRank = (d) => (isFav(d) ? 0 : isAvoid(d) ? 2 : 1);
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -142,97 +142,6 @@ function matchesType(d, t) {
   return d.room_type === t;
 }
 
-/* ----------------------------------------------------------- semantic engine
- * Lazy: the model + the listing vectors are only built when the user actually
- * runs a semantic search. Everything stays client-side and free. */
-let _transformersPromise = null;
-async function getEmbedder() {
-  if (SEM.model) return SEM.model;
-  if (!_transformersPromise) {
-    setSearchStatus("loading model (~25 MB, first time only)…");
-    _transformersPromise = import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2");
-  }
-  const lib = await _transformersPromise;
-  lib.env.allowLocalModels = false;
-  SEM.model = await lib.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", { quantized: true });
-  return SEM.model;
-}
-
-/* tiny IndexedDB wrapper to cache listing vectors across visits */
-function idbOpen() {
-  return new Promise((res, rej) => {
-    const r = indexedDB.open("sfpr-sem", 1);
-    r.onupgradeneeded = () => r.result.createObjectStore("vecs");
-    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
-  });
-}
-async function idbGetAll() {
-  try {
-    const db = await idbOpen();
-    return await new Promise((res) => {
-      const out = {}, cur = db.transaction("vecs", "readonly").objectStore("vecs").openCursor();
-      cur.onsuccess = (e) => { const c = e.target.result; if (c) { out[c.key] = c.value; c.continue(); } else res(out); };
-      cur.onerror = () => res(out);
-    });
-  } catch { return {}; }
-}
-async function idbPut(k, v) {
-  try { const db = await idbOpen(); db.transaction("vecs", "readwrite").objectStore("vecs").put(v, k); } catch {}
-}
-
-/* Build (or reuse cached) unit-length vectors for every listing. Re-embeds a
- * row only when its searchable text changed (hash mismatch). */
-async function ensureListingVectors() {
-  if (SEM.vectors) return SEM.vectors;
-  const cache = await idbGetAll();
-  const vectors = {}, todo = [];
-  for (const d of LISTINGS) {
-    const txt = searchText(d), h = strHash(txt), c = cache[d.id];
-    if (c && c.h === h) vectors[d.id] = c.v; else todo.push({ id: d.id, txt, h });
-  }
-  if (todo.length) {
-    const model = await getEmbedder();
-    const CH = 16;
-    for (let i = 0; i < todo.length; i += CH) {
-      const batch = todo.slice(i, i + CH);
-      const out = await model(batch.map((b) => b.txt), { pooling: "mean", normalize: true });
-      const dim = out.dims[1];
-      for (let j = 0; j < batch.length; j++) {
-        const v = Array.from(out.data.slice(j * dim, (j + 1) * dim));
-        vectors[batch[j].id] = v; idbPut(batch[j].id, { h: batch[j].h, v });
-      }
-      setSearchStatus(`indexing listings… ${Math.min(i + CH, todo.length)}/${todo.length}`);
-    }
-  }
-  SEM.vectors = vectors;
-  return vectors;
-}
-
-/* Embed the query and score every listing by cosine similarity (vectors are
- * normalized, so a dot product IS the cosine). Re-renders when ready. */
-async function ensureSemanticScores(q) {
-  if (SEM.queryFor === q) { setSearchStatus(""); return; }
-  try {
-    const vectors = await ensureListingVectors();
-    setSearchStatus("matching…");
-    const model = await getEmbedder();
-    const out = await model(q, { pooling: "mean", normalize: true });
-    const qv = out.data, scores = {};
-    for (const id in vectors) {
-      const v = vectors[id]; let s = 0;
-      for (let i = 0; i < v.length; i++) s += v[i] * qv[i];
-      scores[id] = s;
-    }
-    SEM.scores = scores; SEM.queryFor = q; SEM.error = false;
-  } catch (e) {
-    SEM.error = true;
-  }
-  if (SEARCH_Q.trim() === q) {
-    setSearchStatus(SEM.error ? "related matches unavailable" : "");
-    render();  // blend the semantic matches in below the keyword ones
-  }
-}
-
 function selection() {
   const f = filters();
   let out = LISTINGS.filter((d) => {
@@ -248,28 +157,25 @@ function selection() {
     return true;
   });
 
-  // Unified search: full-text (exact keyword) matches rank FIRST, then semantic
-  // (meaning-based) matches below them — both blended into one list and only the
-  // confident ones shown. Keyword matching is instant; semantic scores load
-  // lazily, so until they're ready only the keyword half appears.
+  // Unified text search (instant): full-text (rows with EVERY term) rank first,
+  // then fuzzy (rows with SOME term) below them. Within each tier we order by a
+  // simple relevance score; unsafe ("avoid") areas still sink to the bottom.
   const q = SEARCH_Q.trim();
   if (q) {
     const toks = q.toLowerCase().split(/\s+/).filter(Boolean);
-    const isFts = (d) => { const t = searchText(d).toLowerCase(); return toks.every((tk) => t.includes(tk)); };
-    const semReady = SEM.queryFor === q && !SEM.error;
-    const SEM_FLOOR = 0.28;                       // confidence cutoff for meaning-only hits
-    const semScore = (d) => (semReady ? (SEM.scores[d.id] ?? -1) : -1);
-    out = out.filter((d) => isFts(d) || semScore(d) >= SEM_FLOOR);
-    const tier = (d) => (isFts(d) ? 0 : 1);        // 0 = exact keyword, 1 = related by meaning
-    const rel = (d) => (isFts(d) ? textRelevance(d, toks) : semScore(d));
-    const aRank = (d) => (isAvoid(d) ? 1 : 0);     // unsafe areas still sink to the bottom
-    return out.sort((a, b) => aRank(a) - aRank(b) || tier(a) - tier(b) || rel(b) - rel(a));
+    const hits = (d) => { const t = searchText(d).toLowerCase(); return toks.filter((tk) => t.includes(tk)).length; };
+    out = out.map((d) => ({ d, n: hits(d) })).filter((x) => x.n > 0);  // drop rows matching no term
+    const full = (x) => (x.n === toks.length ? 0 : 1);                 // 0 = all terms, 1 = fuzzy/some
+    const rel = (x) => textRelevance(x.d, toks);
+    const aRank = (x) => (isAvoid(x.d) ? 1 : 0);                       // unsafe areas still sink
+    return out
+      .sort((a, b) => aRank(a) - aRank(b) || full(a) - full(b) || rel(b) - rel(a))
+      .map((x) => x.d);
   }
 
-  // Unsafe/unclean ("avoid") areas are penalized: they always sort below
-  // everything else, regardless of the chosen sort. Within each group we use
-  // the selected key — by default, match score (the user ranks purely on match).
-  const aRank = (d) => (isAvoid(d) ? 1 : 0);
+  // Area groups gate the chosen sort: the user's favorite areas always sit on
+  // top and avoid/unsafe areas always sink to the bottom, regardless of the
+  // selected key. Within each group we use that key — by default match score.
   const byKey = {
     match: (a, b) => (b.fit_score ?? -1) - (a.fit_score ?? -1),
     legit: (a, b) => (b.legit_score ?? -1) - (a.legit_score ?? -1),
@@ -277,7 +183,7 @@ function selection() {
     "price-desc": (a, b) => (b.price ?? -1) - (a.price ?? -1),
     newest: (a, b) => (b.first_seen_at || "").localeCompare(a.first_seen_at || ""),
   }[f.sort] || ((a, b) => (b.fit_score ?? -1) - (a.fit_score ?? -1));
-  return out.sort((a, b) => aRank(a) - aRank(b) || byKey(a, b));
+  return out.sort((a, b) => areaRank(a) - areaRank(b) || byKey(a, b));
 }
 
 function render() {
@@ -364,6 +270,7 @@ function renderList(items) {
       <div class="body">
         <h3 class="title">${esc(d.title || "Untitled entry")}</h3>
         <div class="hood"><span class="pin">◈</span> ${esc(d.area || d.neighborhood || "San Francisco")}
+          ${isFav(d) ? `<span class="prox fav">★ favorite area</span>` : ""}
           ${isAvoid(d) ? `<span class="prox avoid">unsafe area</span>` : ""}
           <span class="srctag">${sourceLabel(d.source)}${d.dup_count > 1 ? " +" + (d.dup_count - 1) : ""}</span></div>
         <div class="specs">
@@ -431,14 +338,16 @@ function setView(view) {
 }
 
 /* ----------------------------------------------------------- featured */
-/* The best of the ledger by BOTH scores: legit + fit must each clear a bar,
- * then ranked by their combined strength. A short, curated page. */
+/* The best of the ledger by BOTH scores: legit + fit must each clear a bar.
+ * The user's favorite areas lead; within each group ranked by combined
+ * strength. A short, curated page. */
 function featuredItems() {
   return LISTINGS
     .filter((d) => d.status !== "rejected" && d.status !== "removed" &&
       d.legit_label !== "likely-scam" && !isAvoid(d) &&
       (d.fit_score ?? 0) >= 70 && (d.legit_score ?? 0) >= 70)
     .sort((a, b) =>
+      (areaRank(a) - areaRank(b)) ||                                       // favorites first
       ((b.fit_score + b.legit_score) - (a.fit_score + a.legit_score)) ||  // best match+trust
       ((a.price ?? 1e9) - (b.price ?? 1e9)))
     .slice(0, 12);
@@ -598,21 +507,13 @@ function init() {
   // ---- search ----
   const searchEl = document.getElementById("search");
   const clearEl = document.getElementById("search-clear");
-  let semDebounce = null;
   function applySearch() {
     SEARCH_Q = searchEl.value;
     const q = SEARCH_Q.trim();
     clearEl.classList.toggle("hidden", !q);
     PAGE = 1;
     if (q && VIEW !== "list") setView("list");  // search lives in the Index
-    render();                                   // keyword matches appear instantly
-    clearTimeout(semDebounce);
-    if (q) {                                    // then blend in semantic matches once ready
-      setSearchStatus("finding related…");
-      semDebounce = setTimeout(() => ensureSemanticScores(q), 300);
-    } else {
-      setSearchStatus("");
-    }
+    render();                                   // instant — pure text matching
   }
   searchEl.addEventListener("input", applySearch);
   clearEl.addEventListener("click", () => { searchEl.value = ""; applySearch(); searchEl.focus(); });

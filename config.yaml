@@ -49,10 +49,11 @@ unspecified_area_name: "(unspecified SF)"
 
 # --------------------------------------------------------------------------
 # GEO MODEL — used by scripts/geo.py to classify every listing by COORDINATES
-# (the area text is often missing/wrong) into an area tier and a proximity to
-# the user's workplace. This drives ranking: results are ordered by proximity
-# to work, THEN by match score, with `avoid` areas heavily punished (sunk below
-# everything, badged, and excluded from Featured + Telegram alerts).
+# (the area text is often missing/wrong) into an area tier. This drives ranking:
+# `favorite` areas (flagged `favorite: true` below) float to the TOP, sorted by
+# match within; everything else ranks by match below them; `avoid` areas are
+# heavily punished (sunk below everything, badged, and excluded from Featured +
+# Telegram alerts). (proximity_km is still computed/stored but no longer orders.)
 geo:
   # Workplace: Transamerica Pyramid (Financial District).
   work: { name: "Transamerica Pyramid", lat: 37.7952, lng: -122.4028 }
@@ -74,6 +75,9 @@ geo:
 
   # Preferred residential areas (calm, safe, parks or beach nearby). Each has a
   # rough centroid; a listing within match_radius_km of one is tier 'preferred'.
+  # Entries marked `favorite: true` are the user's top picks (Inner Richmond,
+  # Inner Sunset, the Sunset/Parkside, Presidio Heights/Laurel) — tier 'favorite',
+  # which floats them above everything else in the index, Featured, and alerts.
   # `transit_bonus_km` shrinks the effective distance for areas with fast rail to
   # downtown (BART/Metro to Montgomery), so e.g. Glen Park ranks near despite the
   # miles. Everything else in SF (not avoid, not preferred) is tier 'acceptable'.
@@ -83,17 +87,17 @@ geo:
     - { name: "Russian Hill",                 lat: 37.8010, lng: -122.4180 }
     - { name: "Marina / Cow Hollow",          lat: 37.8005, lng: -122.4360 }
     - { name: "Pacific Heights",              lat: 37.7925, lng: -122.4380 }
-    - { name: "Presidio Heights / Laurel Hts", lat: 37.7880, lng: -122.4470 }
+    - { name: "Presidio Heights / Laurel Hts", lat: 37.7880, lng: -122.4470, favorite: true }
     - { name: "Potrero Hill",                 lat: 37.7580, lng: -122.4005 }
     - { name: "Noe Valley",                   lat: 37.7510, lng: -122.4330 }
     - { name: "Cole Valley / Ashbury Hts",    lat: 37.7660, lng: -122.4480 }
     - { name: "Glen Park",                    lat: 37.7340, lng: -122.4340, transit_bonus_km: 3.0 }
     - { name: "Bernal Heights",               lat: 37.7390, lng: -122.4150 }
-    - { name: "Inner Richmond",               lat: 37.7800, lng: -122.4640 }
-    - { name: "Inner Sunset / UCSF",          lat: 37.7630, lng: -122.4660 }
+    - { name: "Inner Richmond",               lat: 37.7800, lng: -122.4640, favorite: true }
+    - { name: "Inner Sunset / UCSF",          lat: 37.7630, lng: -122.4660, favorite: true }
     - { name: "West Portal / Forest Hill",    lat: 37.7400, lng: -122.4660, transit_bonus_km: 2.5 }
     - { name: "Outer Richmond / Seacliff",    lat: 37.7785, lng: -122.4880 }
-    - { name: "Sunset / Parkside",            lat: 37.7480, lng: -122.4940 }
+    - { name: "Sunset / Parkside",            lat: 37.7480, lng: -122.4940, favorite: true }
 
 # PULL PHILOSOPHY: pull broadly (almost all of SF, price-capped, no office/parking),
 # then let SUBAGENTS manually read each post and filter rooms / tag scams / judge
@@ -105,23 +109,25 @@ geo:
 excats: "40-1"                       # craigslist: exclude office/commercial + parking
 blocked_categories: ["off", "rea", "reb", "vac", "swp", "prk", "park", "fee"]
 
-# Room-type passes. Studio = 0 bedrooms, 1BR = 1 bedroom. 1BR is the priority.
+# Room-type passes. Studio = 0 bedrooms, 1BR = 1 bedroom. 1BR and whole 2+ bed
+# units are BOTH top priority; spacious studio is the fallback. (2+ beds get
+# EXTRA scam scrutiny — a whole multi-bed home <=$2k is classic scam bait.)
 room_types:
   - key: "1br"
     label: "1 bed / 1 bath"
     min_bedrooms: 1
     max_bedrooms: 1
-    priority: 1            # surfaced first everywhere
+    priority: 1            # top priority
+  - key: "2br_plus"
+    label: "2+ bed (whole unit)"
+    min_bedrooms: 2
+    max_bedrooms: 4
+    priority: 1            # top priority too (whole units only; scrutinize harder)
   - key: "studio"
     label: "Studio"
     min_bedrooms: 0
     max_bedrooms: 0
-    priority: 2
-  - key: "2br_plus"
-    label: "2+ bed (rare gems under budget)"
-    min_bedrooms: 2
-    max_bedrooms: 4
-    priority: 3
+    priority: 2            # acceptable fallback (spacious only)
 
 # A spacious studio needs at least this many sqft to score well (smaller = penalised).
 min_studio_sqft: 450

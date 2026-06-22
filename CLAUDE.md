@@ -6,9 +6,14 @@ mechanical work and personally do the **vision vetting + fit ranking**.
 
 ## The user's criteria (the bar every listing is measured against)
 - **Budget:** hard cap **$2,000/month**.
-- **Type:** **1 bed / 1 bath is the TOP priority.** A **spacious studio (≥450 sqft,
+- **Type:** **1 bed / 1 bath AND 2+ bedroom whole units (houses/flats) are BOTH
+  top priority** — the user wants to see them both. A **spacious studio (≥450 sqft,
   full kitchen + bath)** is an acceptable fallback. **Reject shared rooms / SROs /
-  tiny (~250 sqft) studios.**
+  tiny (~250 sqft) studios.** A 2+ bed must be the **WHOLE unit** (not a room in a
+  shared house). **Scrutinize 2+ bed listings HARDER for scams:** a whole multi-
+  bedroom home/flat at or under the $2,000 cap is unusually cheap for SF, so it is
+  exactly the bait scammers use — demand internally-consistent photos of the whole
+  unit, normal on-platform terms, and a real address before trusting it.
 - **Areas (safe, peaceful, parks/beach):** favorites **Inner Richmond** and
   **Inner Sunset**; also good: West Portal/Forest Hill, Sunset/Parkside, Noe
   Valley, Marina/Cow Hollow, Pacific Heights, Russian Hill, North Beach/Telegraph
@@ -17,16 +22,20 @@ mechanical work and personally do the **vision vetting + fit ranking**.
   adjacent: Nob Hill / Lower Nob Hill, SoMa, Civic Center/Mid-Market, Union
   Square/Downtown, Financial District core, Chinatown, plus Bayview/Hunters
   Point and Visitacion Valley.
-- **Ranking = by MATCH score.** The user prefers good areas (e.g. Richmond) even
-  if far, so we do NOT order by proximity to work. Sort purely by match (fit),
-  then trust. The ONLY area effect is a penalty on **unsafe/unclean ("avoid")
-  areas**: they are excluded from Featured + Telegram alerts and sunk to the
-  bottom of the index, badged "AVOID". Preferred vs acceptable areas are treated
-  equally (ranked by match).
+- **Ranking = favorite areas first, then by MATCH score.** The user prefers good
+  areas (e.g. Richmond) even if far, so we do NOT order by proximity to work. The
+  user's **favorite areas float to the TOP** (sorted by match within), the rest
+  rank by match below them, and **unsafe/unclean ("avoid") areas** sink to the
+  bottom (badged "AVOID", excluded from Featured + Telegram alerts). Favorites =
+  **Inner Richmond, Inner Sunset, the whole Sunset/Parkside, Presidio
+  Heights/Laurel Hts** (flagged `favorite: true` in the `geo:` config). Non-
+  favorite preferred vs acceptable areas are still treated equally (ranked by
+  match). Within a tier, sort by match (fit), then trust.
 - **Area model is deterministic** (`scripts/geo.py` + the `geo:` block in
   `config.yaml`): each listing is classified by COORDINATES into a tier
-  (preferred / acceptable / avoid). Only the `avoid` tier matters for ranking now
-  (the safety penalty). Subagents score `fit_score` on the UNIT itself
+  (favorite / preferred / acceptable / avoid). Only `favorite` (float to top) and
+  `avoid` (sink + safety penalty) affect ranking; preferred/acceptable rank by
+  match. Subagents score `fit_score` on the UNIT itself
   (type/size/condition/value) and do NOT weight the neighborhood — the geo model
   owns area. `area_tier` is computed at sync time and stored in Supabase.
   (`proximity_km` is still computed/stored but no longer used for ordering.)
@@ -205,10 +214,21 @@ top pick**; mark `legit_label:"unverified-amateur"` and call out in
 source URL/original post. **It is fine to send NOTHING for the day — a missed
 shared room is worse than an empty result.**
 
-**Fit score (0–100):** 1BR/1BA = top tier (big boost); spacious studio (≥450
-sqft) second tier; small/cramped studio penalized; shared rooms/SROs rejected.
-Weight neighborhood by the user's preference (Inner Richmond / Inner Sunset
-highest). Bonus for price headroom under $2,000 and park proximity.
+**Fit score (0–100):** 1BR/1BA **and a WHOLE 2+ bedroom unit (house/flat)** are
+BOTH top tier (big boost) — do NOT penalize a listing for having 2+ bedrooms;
+the extra space is wanted. Spacious studio (≥450 sqft) = second tier;
+small/cramped studio penalized; shared rooms/SROs rejected. A 2+ bed only earns
+top tier if it's the **whole unit** — a "room in a 3BR" is still a shared room
+(reject). Weight neighborhood by the user's preference (Inner Richmond / Inner
+Sunset highest). Bonus for price headroom under $2,000 and park proximity.
+
+**2+ bed scam scrutiny:** a whole multi-bedroom home/flat at ≤$2,000 is unusually
+cheap for SF and a classic scam bait. Apply the scam signals MORE strictly here:
+the photos must show a coherent whole unit (kitchen + every bedroom + bath of the
+SAME home), the terms must be normal/on-platform, and the address must be real.
+If the body actually offers a "furnished room" while the title claims a whole
+2BR/3BR home, it's a shared-room scam → reject. When the whole-unit claim can't be
+confirmed, keep it visible but mark `legit_label:"unverified-amateur"` and say so.
 
 **Square footage policy:** NEVER drop a listing just because it has no sqft in
 the description — most legit posts omit it. Instead **estimate sqft from the
@@ -225,10 +245,15 @@ do not penalize.
   "low_polish": false,
   "fit_score": 82,
   "is_1br1ba": true,
+  "room_type": "1br",
   "verdict_summary": "Real 1BR in Inner Richmond, consistent photos, normal terms.",
   "recommendation": "Strong match — email today to schedule a viewing."
 }
 ```
+`is_1br1ba` is literal (true only for an actual 1BR/1BA). A **whole 2+ bed** is
+NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
+**high `fit_score`** and set `room_type:"2br_plus"` (the dashboard badges it
+"2+ Bed"). Don't conflate `is_1br1ba:false` with low fit.
 
 ## Scripts
 - `scripts/fetch_listings.py` — multi-pass discovery → DB stubs.

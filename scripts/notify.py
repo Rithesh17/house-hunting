@@ -57,9 +57,11 @@ def qualifies(row, cfg: dict) -> bool:
 
 
 def _rank_key(row) -> tuple:
-    """Order by MATCH desc, then trust desc. (Area is handled by qualifies(),
-    which already drops avoid/unsafe areas; the user ranks purely on match.)"""
-    return (-(row["fit_score"] or 0), -(row["legit_score"] or 0))
+    """Order by the user's favorite areas first, then MATCH desc, then trust
+    desc. (qualifies() already drops avoid/unsafe areas, so only favorite-vs-
+    rest matters here.)"""
+    fav = 0 if _tier(row) == "favorite" else 1
+    return (fav, -(row["fit_score"] or 0), -(row["legit_score"] or 0))
 
 
 def _item_block(row) -> str:

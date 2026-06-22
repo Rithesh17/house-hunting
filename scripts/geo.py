@@ -1,9 +1,11 @@
-"""Classify a listing by COORDINATES into an area tier + proximity to work.
+"""Classify a listing by COORDINATES into an area tier (+ proximity to work).
 
-Drives ranking everywhere: order by proximity to the workplace (Transamerica
-Pyramid), then by match score, with `avoid` areas (Tenderloin + everything
-adjacent/rough) heavily punished — they get a sentinel-large proximity so they
-sort last, and consumers exclude them from Featured + Telegram alerts.
+Drives ranking everywhere: `favorite` areas (the user's top picks, flagged
+`favorite: true` in config) float to the TOP, sorted by match within; the rest
+rank by match below them; `avoid` areas (Tenderloin + everything adjacent/rough)
+are heavily punished — they get a sentinel-large proximity, sort last, and are
+excluded from Featured + Telegram alerts. (proximity_km is still computed and
+stored but no longer orders the list.)
 
 The geo model lives in config.yaml under `geo:` (work, avoid_zones, preferred).
 We classify by lat/lng because the listing's area text is often missing/wrong;
@@ -15,7 +17,7 @@ import math
 
 import common
 
-TIERS = ("preferred", "acceptable", "avoid")
+TIERS = ("favorite", "preferred", "acceptable", "avoid")
 AVOID_PROXIMITY = 999.0  # sentinel so avoid-tier always sorts last
 
 _cfg_geo = None
@@ -68,7 +70,8 @@ def classify(lat, lng, area_label: str | None = None) -> dict:
     if best:
         p = best[0]
         eff = max(0.0, dist - float(p.get("transit_bonus_km", 0)))
-        return {"area_tier": "preferred", "area_name": p["name"],
+        tier = "favorite" if p.get("favorite") else "preferred"
+        return {"area_tier": tier, "area_name": p["name"],
                 "proximity_km": round(eff, 2), "dist_km": round(dist, 2)}
 
     return {"area_tier": "acceptable", "area_name": area_label,
@@ -90,7 +93,8 @@ def _classify_by_label(area_label: str | None) -> dict:
         if key and key in lab:
             d = haversine_km(p["lat"], p["lng"], work["lat"], work["lng"])
             eff = max(0.0, d - float(p.get("transit_bonus_km", 0)))
-            return {"area_tier": "preferred", "area_name": p["name"],
+            tier = "favorite" if p.get("favorite") else "preferred"
+            return {"area_tier": tier, "area_name": p["name"],
                     "proximity_km": round(eff, 2), "dist_km": round(d, 2)}
     # unknown SF location: treat as acceptable but far (mid/high proximity)
     return {"area_tier": "acceptable", "area_name": area_label,
@@ -98,13 +102,14 @@ def _classify_by_label(area_label: str | None) -> dict:
 
 
 def sort_key(row) -> tuple:
-    """Ranking key: proximity to work asc, then match (fit) desc, then trust.
-    avoid-tier sinks via its sentinel proximity. `row` needs proximity_km +
-    fit_score + legit_score (dict or sqlite Row)."""
+    """Ranking key: favorite areas first, then by match (fit) desc, then trust;
+    avoid-tier sinks to the bottom. `row` needs area_tier + fit_score +
+    legit_score (dict or sqlite Row)."""
     def g(k):
         try:
             return row[k]
         except Exception:
             return None
-    return (g("proximity_km") if g("proximity_km") is not None else AVOID_PROXIMITY,
-            -((g("fit_score") or 0)), -((g("legit_score") or 0)))
+    tier = g("area_tier")
+    group = 0 if tier == "favorite" else (2 if tier == "avoid" else 1)
+    return (group, -((g("fit_score") or 0)), -((g("legit_score") or 0)))
