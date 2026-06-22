@@ -3,12 +3,18 @@
     py scripts/refresh.py
 
 Runs, in order:
+  0. Hydrate local DB from Supabase (scripts/hydrate_from_supabase.py)
   1. Craigslist incremental pull   (scripts/fetch_listings.py)
   2. Zumper incremental pull        (scripts/fetch_zumper.py)
   3. Detail + photos + hard gates   (scripts/fetch_detail.py --all-new)
   4. Prune taken-down listings      (scripts/check_links.py)
   5. Dedupe across sources          (tools/dedup.py)
   6. Publish to Supabase            (scripts/sync_supabase.py)
+
+Step 0 rebuilds local state from the cloud read-model so a fresh checkout (or a
+machine that lost the gitignored `data/listings.db`) resumes WITHOUT re-vetting
+everything or letting step 6 delete cloud rows that are merely missing locally.
+It is INSERT OR IGNORE, so on a healthy local DB it is a quick no-op.
 
 Step 6 mirrors the current local DB up to the cloud so the public dashboard
 reflects prunes/dedup right away; re-run it after vetting so new scores publish.
@@ -26,6 +32,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable or "py"
 
 STEPS = [
+    ("Hydrate from Supabase", ["scripts/hydrate_from_supabase.py"]),
     ("Craigslist pull", ["scripts/fetch_listings.py"]),
     ("Zumper pull", ["scripts/fetch_zumper.py"]),
     ("Detail + photos + gates", ["scripts/fetch_detail.py", "--all-new"]),

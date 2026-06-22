@@ -57,11 +57,9 @@ def qualifies(row, cfg: dict) -> bool:
 
 
 def _rank_key(row) -> tuple:
-    """Order by the user's favorite areas first, then MATCH desc, then trust
-    desc. (qualifies() already drops avoid/unsafe areas, so only favorite-vs-
-    rest matters here.)"""
-    fav = 0 if _tier(row) == "favorite" else 1
-    return (fav, -(row["fit_score"] or 0), -(row["legit_score"] or 0))
+    """Flat model: order by MATCH (fit) desc, then trust (legit) desc.
+    qualifies() already drops unsafe/avoid areas, so no area weighting here."""
+    return (-(row["fit_score"] or 0), -(row["legit_score"] or 0))
 
 
 def _item_block(row) -> str:
@@ -171,7 +169,7 @@ def main() -> None:
         # only cluster primaries (dup_group null or == id), qualifying, best first
         prim = [r for r in rows if r["dup_group"] in (None, r["id"])]
         q = [r for r in prim if qualifies(r, cfg)]
-        q.sort(key=_rank_key)  # proximity to work, then match, then trust
+        q.sort(key=_rank_key)  # match, then trust
         targets = q[:args.top]
     elif args.all_qualifying:
         rows = conn.execute(
@@ -211,7 +209,7 @@ def main() -> None:
         conn.close()
         return
 
-    # rank by proximity to work, then match, then trust; send ONE digest
+    # rank by match, then trust; send ONE digest
     targets.sort(key=_rank_key)
     n = len(targets)
     kind = "new pick" if args.new else "top pick"

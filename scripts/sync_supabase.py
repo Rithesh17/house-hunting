@@ -78,12 +78,14 @@ def build_rows(conn) -> list[dict]:
         members.sort(key=lambda m: (m.get("fit_score") or -1,
                                     m.get("legit_score") or -1), reverse=True)
         primary = objs.get(gid, members[0])
+        # Flat area model: 'avoid' (unsafe) vs 'ok'. Classify from the listing's
+        # actual location — the geocoded/post neighbourhood name + coords.
         area = geo.classify(primary.get("lat"), primary.get("lng"),
-                            primary.get("area"))
+                            primary.get("area"), primary.get("neighborhood"))
         out.append({
             "id": primary["id"],
             "area_tier": area["area_tier"],
-            "proximity_km": area["proximity_km"],
+            "proximity_km": None,  # no longer computed (flat model, no work-distance)
             "source": primary.get("source"),
             "url": primary.get("url"),
             "title": primary.get("title"),

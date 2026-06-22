@@ -14,33 +14,34 @@ mechanical work and personally do the **vision vetting + fit ranking**.
   bedroom home/flat at or under the $2,000 cap is unusually cheap for SF, so it is
   exactly the bait scammers use — demand internally-consistent photos of the whole
   unit, normal on-platform terms, and a real address before trusting it.
-- **Areas (safe, peaceful, parks/beach):** favorites **Inner Richmond** and
-  **Inner Sunset**; also good: West Portal/Forest Hill, Sunset/Parkside, Noe
-  Valley, Marina/Cow Hollow, Pacific Heights, Russian Hill, North Beach/Telegraph
-  Hill, Cole Valley, Glen Park, Bernal Heights, Potrero Hill, Outer
-  Richmond/Seacliff, Laurel/Presidio Hts. **AVOID** Tenderloin and everything
-  adjacent: Nob Hill / Lower Nob Hill, SoMa, Civic Center/Mid-Market, Union
-  Square/Downtown, Financial District core, Chinatown, plus Bayview/Hunters
-  Point and Visitacion Valley.
-- **Ranking = favorite areas first, then by MATCH score.** The user prefers good
-  areas (e.g. Richmond) even if far, so we do NOT order by proximity to work. The
-  user's **favorite areas float to the TOP** (sorted by match within), the rest
-  rank by match below them, and **unsafe/unclean ("avoid") areas** sink to the
-  bottom (badged "AVOID", excluded from Featured + Telegram alerts). Favorites =
-  **Inner Richmond, Inner Sunset, the whole Sunset/Parkside, Presidio
-  Heights/Laurel Hts** (flagged `favorite: true` in the `geo:` config). Non-
-  favorite preferred vs acceptable areas are still treated equally (ranked by
-  match). Within a tier, sort by match (fit), then trust.
-- **Area model is deterministic** (`scripts/geo.py` + the `geo:` block in
-  `config.yaml`): each listing is classified by COORDINATES into a tier
-  (favorite / preferred / acceptable / avoid). Only `favorite` (float to top) and
-  `avoid` (sink + safety penalty) affect ranking; preferred/acceptable rank by
-  match. Subagents score `fit_score` on the UNIT itself
-  (type/size/condition/value) and do NOT weight the neighborhood — the geo model
-  owns area. `area_tier` is computed at sync time and stored in Supabase.
-  (`proximity_km` is still computed/stored but no longer used for ordering.)
+- **Areas — LEVEL FIELD except unsafe.** Every SF area is treated equally; there
+  is no favorite/preferred weighting. The ONLY area distinction is **unsafe**
+  (refined from 2023-25 crime data + local reporting + Reddit; SF crime hit a
+  23-year low in 2024, so the avoid set is deliberately tight): **AVOID**
+  Tenderloin + its edges (Lower Nob Hill / Tendernob, Polk Gulch — but NOT the Nob
+  Hill crest, which is safe), SoMa (esp. the 6th-St corridor), Civic Center/Mid-
+  Market, Union Square/Downtown, Financial District core, Chinatown, Bayview/
+  Hunters Point, and Visitacion Valley/Sunnydale. The broader **Mission** and
+  **Western Addition** are NOT blanket-avoided (crime down / block-by-block; only
+  the 16th-&-Mission plaza is a micro-hotspot). Everything calm/residential
+  (Richmond, the Sunset, Noe Valley, Pac Heights, Cole Valley, Glen Park, West
+  Portal, Hayes Valley, etc.) is good — none preferred over another; the user
+  likes parks nearby, young life, and streets safe to walk at night.
+- **Ranking = by MATCH score; unsafe areas sink to the bottom.** All non-unsafe
+  areas are a level field ranked by match (fit), then trust (legit). **Unsafe
+  ("avoid") areas** sink to the bottom (badged "unsafe area", excluded from
+  Featured + Telegram alerts). No favorites float; no proximity-to-work ordering.
+- **Area model is deterministic** (`scripts/geo.py` + the `unsafe:` block in
+  `config.yaml`): each listing is classified into a **binary** tier —
+  `avoid` (unsafe) or `ok`. Classification uses the listing's ACTUAL location:
+  when the post gives a street address, `fetch_detail.py` geocodes it to PRECISE
+  coords + a neighbourhood name; otherwise the post's area text is used. A listing
+  is `avoid` if its neighbourhood NAME matches the unsafe list OR its coords fall
+  in an unsafe zone (a coordinate backstop). Subagents score `fit_score` on the
+  UNIT itself (type/size/condition/value) and do NOT weight the neighborhood — the
+  area model owns area. `area_tier` is computed at sync time and stored in Supabase.
 - Searches are configured in `config.yaml` (areas, room-type passes, price cap,
-  notify thresholds, and the `geo:` area model).
+  notify thresholds, and the `unsafe:` area model).
 
 ## Trigger
 When the user says anything like *"fetch the latest listings,"* *"check
@@ -68,8 +69,14 @@ price + room_type) into one tile; the dossier lists each source's link.
 ## Refresh — the one command (when the user says "refresh" / "fetch latest")
 This is the full cycle. Run it end to end:
 1. `py scripts/refresh.py` — does the deterministic plumbing incrementally:
-   Craigslist pull + Zumper pull + detail/photos/gates + prune dead links +
-   dedupe. It prints how many NEW listings need vetting.
+   **hydrate local DB from Supabase** + Craigslist pull + Zumper pull +
+   detail/photos/gates + prune dead links + dedupe. It prints how many NEW
+   listings need vetting. The hydrate step (`scripts/hydrate_from_supabase.py`)
+   pulls the cloud read-model back into the local SQLite so a fresh checkout (or
+   a machine that lost the gitignored `data/listings.db`) resumes WITHOUT
+   re-vetting everything or letting the final sync delete cloud rows that are
+   merely missing locally. It is `INSERT OR IGNORE` (existing local rows are
+   never clobbered), so on a healthy local DB it is a quick no-op.
 2. **Vet the new ones with subagents** (the only step that needs Claude's vision).
    Use `py tools/batches.py` to group the new ids; spawn parallel
    `general-purpose` subagents that Read each listing's photos + description and
@@ -102,6 +109,12 @@ local SQLite (`data/listings.db`, the source of truth, gitignored). `sync_supaba
 then pushes a **minimal** read-model to **Supabase** (Postgres): one row per
 deduped unit with identity + display essentials + remote `image_urls` + Claude's
 verdict (scores/summary/recommendation/red_flags) + an embedded `sources` list.
+Because the local DB is gitignored and not always present, the cloud doubles as a
+**recovery backup**: `scripts/hydrate_from_supabase.py` (step 0 of `refresh.py`)
+rebuilds the local DB from Supabase — every cloud unit becomes a full local row
+(marked detail-fetched + vetted + already-notified so it is not reprocessed), and
+each unit's folded `sources` become `status='removed'` stubs so their post ids
+suppress re-discovery. It is `INSERT OR IGNORE`, so it only fills in missing rows.
 The verbatim post body is NOT uploaded — the dossier links out to the source post
 (keeps the free-tier DB small). Schema: `supabase/migrations/0001_init.sql`
 (RLS = anon SELECT only; the local sync writes with the service_role key).
@@ -219,8 +232,10 @@ BOTH top tier (big boost) — do NOT penalize a listing for having 2+ bedrooms;
 the extra space is wanted. Spacious studio (≥450 sqft) = second tier;
 small/cramped studio penalized; shared rooms/SROs rejected. A 2+ bed only earns
 top tier if it's the **whole unit** — a "room in a 3BR" is still a shared room
-(reject). Weight neighborhood by the user's preference (Inner Richmond / Inner
-Sunset highest). Bonus for price headroom under $2,000 and park proximity.
+(reject). **Do NOT weight the neighborhood in `fit_score`** — score the UNIT
+itself (type/size/condition/value); the deterministic area model owns area
+(unsafe areas sink, everything else is equal). Bonus for price headroom under
+$2,000.
 
 **2+ bed scam scrutiny:** a whole multi-bedroom home/flat at ≤$2,000 is unusually
 cheap for SF and a classic scam bait. Apply the scam signals MORE strictly here:

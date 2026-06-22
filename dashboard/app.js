@@ -53,13 +53,11 @@ const TRUST = {
 };
 function trust(d) { return TRUST[d.legit_label] || { cls: "t-amateur", label: "Unrated" }; }
 
-/* Area model: the user's top picks ("favorite" tier) float to the top; the
- * unsafe/unclean ("avoid") tier is sunk to the bottom. Everything else is in
- * the middle, ranked by match. */
+/* Area model (flat): every area is a level field ranked by match; only the
+ * unsafe ("avoid") tier is sunk to the bottom. No favorite/preferred weighting. */
 const isAvoid = (d) => d.area_tier === "avoid";
-const isFav = (d) => d.area_tier === "favorite";
-/* Group rank for ordering: 0 = favorite (top), 1 = normal, 2 = avoid (bottom). */
-const areaRank = (d) => (isFav(d) ? 0 : isAvoid(d) ? 2 : 1);
+/* Group rank for ordering: 0 = normal, 1 = unsafe (bottom). */
+const areaRank = (d) => (isAvoid(d) ? 1 : 0);
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -173,9 +171,9 @@ function selection() {
       .map((x) => x.d);
   }
 
-  // Area groups gate the chosen sort: the user's favorite areas always sit on
-  // top and avoid/unsafe areas always sink to the bottom, regardless of the
-  // selected key. Within each group we use that key — by default match score.
+  // Area groups gate the chosen sort: unsafe ("avoid") areas always sink to the
+  // bottom regardless of the selected key; every other area is a level field.
+  // Within each group we use that key — by default match score.
   const byKey = {
     match: (a, b) => (b.fit_score ?? -1) - (a.fit_score ?? -1),
     legit: (a, b) => (b.legit_score ?? -1) - (a.legit_score ?? -1),
@@ -270,7 +268,6 @@ function renderList(items) {
       <div class="body">
         <h3 class="title">${esc(d.title || "Untitled entry")}</h3>
         <div class="hood"><span class="pin">◈</span> ${esc(d.area || d.neighborhood || "San Francisco")}
-          ${isFav(d) ? `<span class="prox fav">★ favorite area</span>` : ""}
           ${isAvoid(d) ? `<span class="prox avoid">unsafe area</span>` : ""}
           <span class="srctag">${sourceLabel(d.source)}${d.dup_count > 1 ? " +" + (d.dup_count - 1) : ""}</span></div>
         <div class="specs">
@@ -339,15 +336,14 @@ function setView(view) {
 
 /* ----------------------------------------------------------- featured */
 /* The best of the ledger by BOTH scores: legit + fit must each clear a bar.
- * The user's favorite areas lead; within each group ranked by combined
- * strength. A short, curated page. */
+ * Unsafe areas are excluded; the rest are ranked by combined strength (then
+ * price). A short, curated page. */
 function featuredItems() {
   return LISTINGS
     .filter((d) => d.status !== "rejected" && d.status !== "removed" &&
       d.legit_label !== "likely-scam" && !isAvoid(d) &&
       (d.fit_score ?? 0) >= 70 && (d.legit_score ?? 0) >= 70)
     .sort((a, b) =>
-      (areaRank(a) - areaRank(b)) ||                                       // favorites first
       ((b.fit_score + b.legit_score) - (a.fit_score + a.legit_score)) ||  // best match+trust
       ((a.price ?? 1e9) - (b.price ?? 1e9)))
     .slice(0, 12);

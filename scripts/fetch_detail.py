@@ -140,17 +140,32 @@ def download_images(sess: requests.Session, post_id: str,
     return out_dir, count
 
 
+# Rough San Francisco bounding box — used to reject a bad geocode (e.g. a
+# city-centroid fallback) before it overwrites a listing's coords.
+_SF_BOUNDS = (37.70, 37.84, -122.52, -122.35)  # (lat_min, lat_max, lng_min, lng_max)
+
+
+def _in_sf(lat, lng) -> bool:
+    return (_SF_BOUNDS[0] <= lat <= _SF_BOUNDS[1]
+            and _SF_BOUNDS[2] <= lng <= _SF_BOUNDS[3])
+
+
 def geocode(sess: requests.Session, address: str):
-    """Geocode a street address to (lat, lng) via OpenStreetMap Nominatim."""
+    """Geocode a street address via OpenStreetMap Nominatim. Returns
+    (lat, lng, place_name) where place_name is the best neighbourhood/suburb
+    label Nominatim has for that address (feeds the area model), or None."""
     try:
         r = sess.get("https://nominatim.openstreetmap.org/search",
                      params={"q": address, "format": "json", "limit": 1,
-                             "countrycodes": "us"},
+                             "countrycodes": "us", "addressdetails": 1},
                      headers={"User-Agent": "sf-house-hunt/1.0 (personal project)"},
                      timeout=20)
         j = r.json()
         if j:
-            return float(j[0]["lat"]), float(j[0]["lon"])
+            a = j[0].get("address", {}) or {}
+            place = (a.get("neighbourhood") or a.get("suburb")
+                     or a.get("quarter") or a.get("city_district"))
+            return float(j[0]["lat"]), float(j[0]["lon"]), place
     except (requests.exceptions.RequestException, ValueError, KeyError) as e:
         print(f"  ! geocode failed: {e}", file=sys.stderr)
     return None
@@ -189,14 +204,22 @@ def fetch_one(conn, cfg: dict, post_id: str) -> None:
     if b is not None:
         data["room_type"] = "studio" if b == 0 else "1br" if b == 1 else "2br_plus"
 
-    # If the post has no map coords but gave a street address, geocode it so it
-    # still maps accurately on the Atlas.
+    # Determine the area from the ACTUAL location: when the post gives a street
+    # address, geocode it for a PRECISE location + neighbourhood name (more
+    # reliable than Craigslist's loose map pin, which drives area-model
+    # mistakes). Capture the neighbourhood (when the post didn't supply one) for
+    # the unsafe-name match, and prefer the geocoded coords as long as they land
+    # inside SF (guards against a bad city-centroid fallback overwriting a pin).
     geocoded = False
-    if data.get("lat") is None and data.get("address"):
-        geo = geocode(sess, data["address"])
-        if geo:
-            data["lat"], data["lng"] = geo
-            geocoded = True
+    if data.get("address"):
+        g = geocode(sess, data["address"])
+        if g:
+            glat, glng, place = g
+            if place and not data.get("neighborhood"):
+                data["neighborhood"] = place
+            if _in_sf(glat, glng):
+                data["lat"], data["lng"] = glat, glng
+                geocoded = True
             common.polite_sleep(cfg)
 
     fields = {k: v for k, v in data.items() if v is not None}
