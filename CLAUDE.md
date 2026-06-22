@@ -122,7 +122,10 @@ The **dashboard is a static site on Vercel** (`dashboard/`, Hobby/free) that rea
 Supabase directly with the public anon key (`dashboard/config.js`). It is
 **read-only** — manage status locally (`py scripts/db.py set-status …`) then
 `sync_supabase.py`. **Redeploy Vercel ONLY when the dashboard view changes**
-(edits in `dashboard/`): `vercel deploy ./dashboard --prod --yes`. Data-only
+(edits in `dashboard/`): the Vercel project's **Root Directory = `dashboard`**,
+so deploy from the **repo root** with `vercel deploy --prod --yes` (NOT
+`vercel deploy ./dashboard` — that double-nests the root dir and the build hangs).
+A `git push` to `main` also auto-deploys via the GitHub integration. Data-only
 updates need just `sync_supabase.py` — no redeploy. Keep both on free tier (no
 paid Vercel/Supabase compute). The local Flask `serve.py` remains for offline
 viewing of the local DB but is no longer the dashboard's data source.
