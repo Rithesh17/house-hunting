@@ -142,6 +142,28 @@ body {
 }
 .field input { width: 84px; }
 .field select:focus, .field input:focus { outline: 2px solid var(--persimmon); outline-offset: 1px; }
+
+/* value-range sliders (price / trust / match) */
+.rangefield { min-width: 136px; }
+.rangefield > span b {
+  font-family: var(--sans); font-weight: 700; font-size: 12px;
+  letter-spacing: 0; text-transform: none; color: var(--persimmon);
+}
+.field input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  width: 136px; height: 4px; min-width: 0; padding: 0; border: 0;
+  background: var(--rule-bold); border-radius: 0; cursor: pointer;
+  accent-color: var(--persimmon); align-self: stretch; margin: 7px 0;
+}
+.field input[type=range]:focus { outline-offset: 6px; }
+.field input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 14px; height: 14px;
+  background: var(--persimmon); border: 0; border-radius: 0; cursor: pointer;
+}
+.field input[type=range]::-moz-range-thumb {
+  width: 14px; height: 14px; background: var(--persimmon);
+  border: 0; border-radius: 0; cursor: pointer;
+}
 .toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); cursor: pointer; }
 .toggle input { accent-color: var(--persimmon); }
 

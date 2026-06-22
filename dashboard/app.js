@@ -125,7 +125,7 @@ function updateAreaBtn() {
 function filters() {
   return {
     sort: val("sort"), type: val("filter-type"),
-    maxPrice: +val("filter-price") || Infinity,
+    maxPrice: +val("filter-price"),   // range slider, 0..2000
     minLegit: +val("filter-legit"), minFit: +val("filter-fit"),
     status: val("filter-status"),
     hideScams: document.getElementById("hide-scams").checked,
@@ -133,6 +133,14 @@ function filters() {
   };
 }
 const val = (id) => document.getElementById(id).value;
+
+/* Live value labels for the range sliders (price / trust / match). */
+function syncRangeLabels() {
+  document.getElementById("price-val").textContent = "$" + val("filter-price");
+  const lv = +val("filter-legit"), fv = +val("filter-fit");
+  document.getElementById("legit-val").textContent = lv ? lv + "+" : "any";
+  document.getElementById("fit-val").textContent = fv ? fv + "+" : "any";
+}
 
 function matchesType(d, t) {
   if (!t) return true;
@@ -499,7 +507,8 @@ function init() {
   ["sort", "filter-type", "filter-price", "filter-legit", "filter-fit",
    "filter-status", "hide-scams", "show-rejected"]
     .forEach((id) => document.getElementById(id)
-      .addEventListener("input", () => { PAGE = 1; render(); }));
+      .addEventListener("input", () => { syncRangeLabels(); PAGE = 1; render(); }));
+  syncRangeLabels();
   // ---- search ----
   const searchEl = document.getElementById("search");
   const clearEl = document.getElementById("search-clear");
