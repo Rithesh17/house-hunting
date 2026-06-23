@@ -109,7 +109,7 @@ def main() -> None:
             skipped += 1
             continue
         pid = f"zl{zpid}"
-        if db.listing_exists(conn, pid):
+        if db.listing_exists(conn, pid) or db.is_blocked(conn, pid):
             continue
         detail = it.get("detailUrl") or ""
         url = detail if detail.startswith("http") else "https://www.zillow.com" + detail

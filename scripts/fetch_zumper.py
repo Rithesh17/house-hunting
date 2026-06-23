@@ -227,7 +227,7 @@ def main() -> None:
         image_urls = [f"https://img.zumpercdn.com/{i}/1280x960?dpr=1&fit=crop&h=542&q=76&w=991"
                       for i in image_ids]
 
-        if db.listing_exists(conn, pid):
+        if db.listing_exists(conn, pid) or db.is_blocked(conn, pid):
             continue
         db.insert_stub(conn, post_id=pid, url=url, title=title, price=price,
                        room_type=room_type, area=area, neighborhood=hood,

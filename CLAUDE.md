@@ -367,6 +367,10 @@ NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
 - `scripts/market_comps.py` — cache of external market-rent ranges per
   (area_group, room_type); filled by the orchestrator via WebSearch (`set`).
 - `tools/apply_verdicts.py` — merge batch verdicts into the DB (rooms/etc rejected).
+- `tools/purge_db.py` — DELETE listings we don't keep (trust `legit_score<40`, OR
+  unsafe `area_tier=='avoid'`) and add their ids to a **blocklist** so they're never
+  re-pulled/re-vetted; keeps ok-area + trust≥40. Dry-run by default; `--execute`
+  to delete, then `sync_supabase.py` drops them from the cloud. Run after vetting.
 - `scripts/notify.py` — Telegram digest (thresholded; scams blocked).
 - `scripts/sync_supabase.py` — publish the minimal cloud read-model to Supabase.
 - `scripts/serve.py` — local map dashboard of the LOCAL db (http://localhost:8000).

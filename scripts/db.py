@@ -91,6 +91,15 @@ CREATE TABLE IF NOT EXISTS market_comps (
     fetched_at  TEXT,
     PRIMARY KEY (area_group, room_type)
 );
+
+-- Ids that were purged (scam/low-trust or unsafe-area) and must NOT be
+-- re-discovered/re-vetted on later pulls. insert_stub + the fetchers skip these.
+CREATE TABLE IF NOT EXISTS blocklist (
+    id         TEXT PRIMARY KEY,
+    source     TEXT,
+    reason     TEXT,
+    blocked_at TEXT
+);
 """
 
 # Columns added after the original schema shipped; ALTER them onto older DBs.
@@ -145,11 +154,22 @@ def listing_exists(conn: sqlite3.Connection, post_id: str) -> bool:
     return cur.fetchone() is not None
 
 
+def is_blocked(conn: sqlite3.Connection, post_id: str) -> bool:
+    return conn.execute("SELECT 1 FROM blocklist WHERE id = ?", (post_id,)).fetchone() is not None
+
+
+def block(conn: sqlite3.Connection, post_id: str, source: str, reason: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO blocklist(id, source, reason, blocked_at) VALUES(?,?,?,?)",
+        (post_id, source, reason, now()))
+
+
 def insert_stub(conn: sqlite3.Connection, *, post_id: str, url: str, title: str,
                 price, room_type: str, area: str, neighborhood: str,
                 posted_at: str | None) -> bool:
-    """Insert a freshly-discovered listing. Returns True if newly inserted."""
-    if listing_exists(conn, post_id):
+    """Insert a freshly-discovered listing. Returns True if newly inserted.
+    Skips ids that were purged to the blocklist (so they aren't re-surfaced)."""
+    if listing_exists(conn, post_id) or is_blocked(conn, post_id):
         return False
     conn.execute(
         """INSERT INTO listings
