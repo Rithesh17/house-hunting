@@ -92,6 +92,32 @@ def _dre_block(row) -> dict | None:
     return {"numbers_found": nums, "records": recs}
 
 
+def _web_checks(row, dre: dict | None) -> list[dict]:
+    """Suggested WebSearches for the vetting subagent (scripts can't web-search).
+    The big one: is the SAME property listed elsewhere at a different price / for
+    sale? That exposes cloned/hijacked listings (how 3870 Sacramento & 133 Caine
+    Ave were caught)."""
+    out = []
+    addr = (row["address"] or "").strip()
+    if addr:
+        out.append({
+            "purpose": "Is this SAME address listed elsewhere? Compare the price; "
+                       "a much-higher real rent, or a FOR-SALE listing, = "
+                       "cloned/stolen listing (scam). A consistent price on a legit "
+                       "site = corroboration.",
+            "query": f'"{addr}" San Francisco rent OR "for sale"'})
+    if row["phone"]:
+        out.append({"purpose": "phone reused across unrelated listings / scam reports",
+                    "query": f'"{row["phone"]}"'})
+    for rec in (dre or {}).get("records", []):
+        if rec.get("found") and rec.get("name"):
+            out.append({"purpose": "the licensed agent's real listings / brokerage",
+                        "query": f'{rec["name"]} {rec.get("employing_broker") or ""} '
+                                 f'San Francisco rental'.strip()})
+            break
+    return out
+
+
 def _market_block(conn, row) -> dict:
     group = market_comps.area_group(row["area"])
     rng = market_comps.range_for(conn, row["area"], row["room_type"])
@@ -111,17 +137,19 @@ def build_bundle(conn, post_id: str) -> dict | None:
     if not row:
         print(f"  ! {post_id} not in DB", file=sys.stderr)
         return None
+    dre = _dre_block(row)
     bundle = {
         "id": post_id,
         "fetched_at": db.now(),
         "post": {k: row[k] for k in ("address", "price", "room_type", "area",
                                      "neighborhood", "lat", "lng", "phone",
                                      "contact", "dre_number")},
-        "dre": _dre_block(row),
+        "dre": dre,
         "owner": owner_lookup.owner_of_record(row["lat"], row["lng"], row["address"])
                  if row["lat"] is not None else {"found": False, "note": "no coords"},
         "market": _market_block(conn, row),
         "siblings": find_siblings(conn, row),
+        "web_checks": _web_checks(row, dre),
     }
     os.makedirs(db.RESEARCH_DIR, exist_ok=True)
     with open(os.path.join(db.RESEARCH_DIR, f"{post_id}.json"), "w") as f:

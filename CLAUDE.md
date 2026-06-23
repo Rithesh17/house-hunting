@@ -264,6 +264,13 @@ FETCHED facts; YOU match/verify — semantic, not exact-string):
   better title — same price/beds/photos) OR a SCAM FLOOD (many posts with
   differing prices/photos/contact). A shared photo or contact at a DIFFERENT
   address = stolen photos / spam ring = strong flag. Judge semantically.
+- `web_checks` — **run these with `WebSearch`** (the bundle suggests the queries):
+  search the address to see if the SAME property is listed ELSEWHERE. If it shows
+  up on Zillow / Apartments.com / Redfin etc. at a **much higher** real rent, or
+  is listed **FOR SALE**, the post is a cloned/hijacked listing → strong scam flag
+  (this is how 3870 Sacramento and 133 Caine Ave were caught). A *consistent*
+  price on a legit channel = corroboration (boost). Also search the phone / agent
+  name for reuse across unrelated listings or scam-report hits.
 Record each check in the verdict's `verification` object. A confirmed cross-check
 (DRE match, real parcel, consistent siblings) → `likely-legit`; a contradiction →
 `likely-scam`; neither → `unverified-amateur` (still surfaced). **Contact-stage
