@@ -6,6 +6,8 @@ Runs, in order:
   0. Hydrate local DB from Supabase (scripts/hydrate_from_supabase.py)
   1. Craigslist incremental pull   (scripts/fetch_listings.py)
   2. Zumper incremental pull        (scripts/fetch_zumper.py)
+  2b. Zillow pull via Apify         (scripts/fetch_zillow.py; needs APIFY_TOKEN —
+      skipped gracefully if unset; bills ~40 Apify results/run, ~2,500/mo free)
   3. Detail + photos + hard gates   (scripts/fetch_detail.py --all-new)
   4. Prune taken-down listings      (scripts/check_links.py)
   5. Dedupe across sources          (tools/dedup.py)
@@ -41,6 +43,7 @@ STEPS = [
     ("Hydrate from Supabase", ["scripts/hydrate_from_supabase.py"]),
     ("Craigslist pull", ["scripts/fetch_listings.py"]),
     ("Zumper pull", ["scripts/fetch_zumper.py"]),
+    ("Zillow pull (Apify)", ["scripts/fetch_zillow.py"]),
     ("Detail + photos + gates", ["scripts/fetch_detail.py", "--all-new"]),
     ("Prune dead links", ["scripts/check_links.py"]),
     ("Dedupe across sources", ["tools/dedup.py"]),

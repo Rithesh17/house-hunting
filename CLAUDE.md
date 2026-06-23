@@ -68,6 +68,16 @@ Craigslist,"* *"any new places today?"* — run the pipeline below end to end.
   SHARED-ROOM GATE). If Playwright/Chromium is missing the fetch degrades to
   `description=None` (pipeline still runs); some legit listings also simply have
   no body, which is fine.
+- **Zillow** (`scripts/fetch_zillow.py`) — Zillow hard-blocks scraping (PerimeterX),
+  so we go through the **Apify `maxcopell/zillow-scraper` actor** (it runs Zillow's
+  own search behind proxies). We query SF / for-rent / ≤max_price / newest, map each
+  listing to our schema, and insert `source='zillow'` rows (skipping multi-unit
+  "building cards"). Needs `APIFY_TOKEN` in `.env`; **bills per result** (~$0.002
+  each, ~2,500/mo free on the $5 plan), so each run is capped (`--max-items`,
+  default 40) and sorted newest-first to stay incremental + inside the free quota.
+  Zillow search returns ~1 photo + no body, so (like thin Zumper rows) share-vs-unit
+  is unconfirmed by photos — but Zillow units are agent/MLS-backed with real
+  addresses, so the research + cross-listing checks carry the weight.
 Both feed the SAME downstream (vetting, dedup, dashboard). `tools/dedup.py` merges
 the same unit ACROSS sources (by shared image id, address, OR rounded coords +
 price + room_type) into one tile; the dossier lists each source's link.
@@ -347,6 +357,8 @@ NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
 ## Scripts
 - `scripts/fetch_listings.py` — multi-pass discovery → DB stubs.
 - `scripts/fetch_detail.py` — parse post + download photos (+ phone/email/DRE#).
+- `scripts/fetch_zillow.py` — pull SF rentals from Zillow via the Apify
+  `maxcopell/zillow-scraper` actor (needs `APIFY_TOKEN`); `source='zillow'` rows.
 - `scripts/research.py` — Stage-2: assemble `data/research/<id>.json` (DRE + owner
   + market range + duplicate siblings) for the vetting subagent to cross-check.
 - `scripts/verify_dre.py` — look up a CA DRE license (name/status/broker/discipline)
