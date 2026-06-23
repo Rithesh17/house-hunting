@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 import common
 import db
 import filters
+import verify_dre
 
 IMG_RE = re.compile(r"https://images\.craigslist\.org/([\w]+)_\d+x\d+\.jpg")
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\d)")
@@ -90,19 +91,24 @@ def parse_post(html: str) -> dict:
         if addr:
             data["address"] = addr
 
-    # Contact from the post body: phone and/or email (posters who include one).
-    # The Craigslist relay email lives behind a JS token; the headless reply
-    # fetcher (fetch_contacts) captures that separately for the shortlist.
+    # Contact from the post body: phone, email, and any CA DRE license # (agents
+    # cite one; small landlords/subletters don't — absence is neutral). The DRE #
+    # is verified later in scripts/research.py against the public DRE lookup.
     blob = " ".join([data.get("title", ""), data.get("description", "")])
     phone = PHONE_RE.search(blob)
     email = EMAIL_RE.search(blob)
+    dre = verify_dre.extract_dre(blob)
     if phone:
         data["phone"] = phone.group(0)
+    if dre:
+        data["dre_number"] = ",".join(dre)
     bits = []
     if phone:
         bits.append("☎ " + phone.group(0))
     if email:
         bits.append("✉ " + email.group(0))
+    if dre:
+        bits.append("DRE# " + ", ".join(dre))
     if bits:
         data["contact"] = "  ".join(bits)
 
@@ -254,8 +260,8 @@ def fetch_one(conn, cfg: dict, post_id: str) -> None:
     print(f"URL:          {row['url']}")
     print(f"Images:       {image_count} downloaded -> {image_dir}")
     print(f"\nDescription:\n{data.get('description', '(none)')[:2000]}")
-    print("\n>> Claude: Read each image in the folder above, judge legitimacy + "
-          "fit, then run save_verdict.py.")
+    print("\n>> Claude: Read each image + data/research/<id>.json, judge "
+          "legitimacy + fit (Stage 1 + Stage 2), then write a verdict JSON.")
 
 
 def main() -> None:

@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
 DB_PATH = os.path.join(DATA_DIR, "listings.db")
+# Transient Stage-2 research bundles (one JSON per listing), like data/images/.
+RESEARCH_DIR = os.path.join(DATA_DIR, "research")
 
 STATUSES = ("new", "vetted", "interested", "contacted", "rejected", "removed")
 
@@ -48,6 +50,7 @@ CREATE TABLE IF NOT EXISTS listings (
     image_count   INTEGER DEFAULT 0,
     contact       TEXT,
     phone         TEXT,
+    dre_number    TEXT,                    -- CA DRE license # parsed from the body (agents only)
     status        TEXT NOT NULL DEFAULT 'new',
     reject_reason TEXT,
     dup_group     TEXT,                    -- primary listing id of its duplicate cluster
@@ -60,6 +63,7 @@ CREATE TABLE IF NOT EXISTS listings (
     is_1br1ba     INTEGER DEFAULT 0,
     verdict_summary TEXT,
     recommendation  TEXT,
+    verification    TEXT,                  -- JSON: Stage-2 cross-check {dre,owner,price,duplicates}
     -- bookkeeping --
     first_seen_at TEXT,
     detail_fetched_at TEXT,
@@ -73,7 +77,34 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Cached external market-rent ranges per (area_group, room_type). Populated by
+-- the orchestrator (one web lookup per bucket) since our own listings are capped
+-- at the budget and can't establish true market rate. Read by scripts/research.py.
+CREATE TABLE IF NOT EXISTS market_comps (
+    area_group  TEXT,
+    room_type   TEXT,
+    low         INTEGER,
+    median      INTEGER,
+    high        INTEGER,
+    source      TEXT,
+    fetched_at  TEXT,
+    PRIMARY KEY (area_group, room_type)
+);
 """
+
+# Columns added after the original schema shipped; ALTER them onto older DBs.
+_ADDED_COLUMNS = {"dre_number": "TEXT", "verification": "TEXT"}
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Idempotently bring an existing DB up to the current schema."""
+    conn.executescript(SCHEMA)  # creates any missing tables (market_comps, etc.)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(listings)").fetchall()}
+    for name, decl in _ADDED_COLUMNS.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE listings ADD COLUMN {name} {decl}")
+    conn.commit()
 
 
 def get_meta(conn: sqlite3.Connection, key: str, default=None):
@@ -93,8 +124,11 @@ def now() -> str:
 
 def connect() -> sqlite3.Connection:
     os.makedirs(DATA_DIR, exist_ok=True)
+    fresh = not os.path.exists(DB_PATH)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    if not fresh:
+        migrate(conn)  # bring older DBs up to the current schema
     return conn
 
 
@@ -136,10 +170,12 @@ def update_detail(conn: sqlite3.Connection, post_id: str, fields: dict) -> None:
 
 
 def save_verdict(conn: sqlite3.Connection, post_id: str, v: dict) -> None:
+    ver = v.get("verification")
     conn.execute(
         """UPDATE listings SET
               legit_score = ?, legit_label = ?, red_flags = ?, low_polish = ?,
               fit_score = ?, is_1br1ba = ?, verdict_summary = ?, recommendation = ?,
+              verification = ?,
               status = CASE WHEN status = 'new' THEN 'vetted' ELSE status END,
               vetted_at = ?
            WHERE id = ?""",
@@ -152,6 +188,7 @@ def save_verdict(conn: sqlite3.Connection, post_id: str, v: dict) -> None:
             1 if v.get("is_1br1ba") else 0,
             v.get("verdict_summary"),
             v.get("recommendation"),
+            json.dumps(ver) if ver is not None else None,
             now(),
             post_id,
         ),

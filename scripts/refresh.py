@@ -9,7 +9,13 @@ Runs, in order:
   3. Detail + photos + hard gates   (scripts/fetch_detail.py --all-new)
   4. Prune taken-down listings      (scripts/check_links.py)
   5. Dedupe across sources          (tools/dedup.py)
-  6. Publish to Supabase            (scripts/sync_supabase.py)
+  6. Stage-2 research bundles       (scripts/research.py --all-new)
+  7. Publish to Supabase            (scripts/sync_supabase.py)
+
+Step 6 fetches the free external facts (DRE / ownership / duplicate siblings /
+cached market range) into data/research/<id>.json for the vetting subagents to
+cross-check. Market buckets with no cached range are printed so the orchestrator
+can fill them (one web lookup per area-group via market_comps.py set).
 
 Step 0 rebuilds local state from the cloud read-model so a fresh checkout (or a
 machine that lost the gitignored `data/listings.db`) resumes WITHOUT re-vetting
@@ -38,6 +44,7 @@ STEPS = [
     ("Detail + photos + gates", ["scripts/fetch_detail.py", "--all-new"]),
     ("Prune dead links", ["scripts/check_links.py"]),
     ("Dedupe across sources", ["tools/dedup.py"]),
+    ("Research bundles (DRE/owner/dups/market)", ["scripts/research.py", "--all-new"]),
     ("Publish to Supabase", ["scripts/sync_supabase.py"]),
 ]
 
@@ -65,9 +72,12 @@ def main():
     print(f"\n{'='*70}\nREFRESH COMPLETE — last pull {last}")
     print(f"{to_vet} new listing(s) awaiting vetting.")
     if to_vet:
-        print("Next (Claude): vet them via subagents -> py tools/apply_verdicts.py "
+        print("Next (Claude): (1) fill any market buckets research.py flagged "
+              "(market_comps.py set …); (2) re-run research.py --all-new so ranges "
+              "attach; (3) vet via subagents reading post + photos + "
+              "data/research/<id>.json (Stage 1 + Stage 2) -> py tools/apply_verdicts.py "
               "-> py tools/dedup.py -> py scripts/sync_supabase.py "
-              "-> py scripts/notify.py --all-qualifying -> py tools/purge_images.py --all")
+              "-> py scripts/notify.py --new -> py tools/purge_images.py --all")
     else:
         print("Nothing new to vet. Cloud + dashboard are up to date.")
 

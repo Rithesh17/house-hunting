@@ -70,17 +70,24 @@ price + room_type) into one tile; the dossier lists each source's link.
 This is the full cycle. Run it end to end:
 1. `py scripts/refresh.py` — does the deterministic plumbing incrementally:
    **hydrate local DB from Supabase** + Craigslist pull + Zumper pull +
-   detail/photos/gates + prune dead links + dedupe. It prints how many NEW
-   listings need vetting. The hydrate step (`scripts/hydrate_from_supabase.py`)
-   pulls the cloud read-model back into the local SQLite so a fresh checkout (or
-   a machine that lost the gitignored `data/listings.db`) resumes WITHOUT
-   re-vetting everything or letting the final sync delete cloud rows that are
-   merely missing locally. It is `INSERT OR IGNORE` (existing local rows are
-   never clobbered), so on a healthy local DB it is a quick no-op.
-2. **Vet the new ones with subagents** (the only step that needs Claude's vision).
-   Use `py tools/batches.py` to group the new ids; spawn parallel
-   `general-purpose` subagents that Read each listing's photos + description and
-   **Write** verdicts to `data/_verdicts_*.json` (see rubric below).
+   detail/photos/gates + prune dead links + dedupe + **Stage-2 research bundles**
+   (`scripts/research.py --all-new` → `data/research/<id>.json`). It prints how
+   many NEW listings need vetting AND which market buckets need a web lookup. The
+   hydrate step (`scripts/hydrate_from_supabase.py`) pulls the cloud read-model
+   back into local SQLite so a fresh checkout resumes WITHOUT re-vetting everything
+   or letting the final sync delete cloud rows that are merely missing locally
+   (`INSERT OR IGNORE`; a quick no-op on a healthy DB).
+1a. **Fill market buckets** research flagged: do ONE `WebSearch` per
+   `(area_group, room_type)` (e.g. "Inner Richmond 1BR average rent"), then
+   `py scripts/market_comps.py set <group> <room_type> <low> <median> <high> web:<month>`,
+   and re-run `py scripts/research.py --all-new` so price ranges attach to bundles.
+2. **Vet the new ones with subagents** (the step that needs Claude's vision +
+   judgment). Use `py tools/batches.py` to group the new ids; spawn parallel
+   `general-purpose` subagents. Each reads the post (`py scripts/db.py show <id>`),
+   **every photo** in `data/images/<id>/`, AND the **research bundle**
+   `data/research/<id>.json`, then applies the **two-stage rubric below** (Stage 1
+   = lenient post screen; Stage 2 = semantic cross-check of the bundle) and
+   **Writes** verdicts to `data/_verdicts_*.json`.
 3. `py tools/apply_verdicts.py` (merges the batch files; reject rooms/etc., keep
    scams flagged), then delete the batch files.
 4. `py tools/dedup.py` (re-cluster with the new verdicts so primaries are best).
@@ -156,10 +163,13 @@ viewing of the local DB but is no longer the dashboard's data source.
    Everything else — private rooms hiding as "in-law apartments", scams, fit,
    neighborhood safety — is judged by SUBAGENTS, not scripts. (We do NOT use the
    brittle keyword room/scam scripts in the main flow; they caused false drops.)
-3. **Vet survivors with subagents (the judgment layer).**
-   Vetting = looking at the photos + reading the description with real vision.
-   This is where rooms/scams/fit are decided. Subagents also return a
-   `disposition` ("keep"/"reject") + `reject_reason`; `apply_verdicts.py` rejects
+3. **Vet survivors with subagents (the judgment layer) — TWO STAGES.**
+   Stage 1 = looking at photos + reading the description with real vision; Stage 2
+   = semantically cross-checking the scripted research bundle
+   `data/research/<id>.json` (DRE name-match, real parcel, price ratio, duplicate
+   siblings). Scripts FETCH the facts; the subagent VERIFIES them. This is where
+   rooms/scams/fit are decided. Subagents also return a `disposition`
+   ("keep"/"reject") + `reject_reason`; `apply_verdicts.py` rejects
    rooms/wanted/out-of-area while keeping scams visible-but-flagged.
    For a full run, **fan this out across parallel subagents** so it's fast:
    - Split the new listing ids into small groups (~3 per subagent) and spawn
@@ -168,11 +178,13 @@ viewing of the local DB but is no longer the dashboard's data source.
    - Use `py tools/batches.py` to print survivor ids grouped into batches
      (preferred areas + price first). Give each subagent its ids + the rubric +
      schema. Each subagent: for each id run `py scripts/db.py show <id>`, **Read
-     every image** in `data/images/<id>/` (multimodal), apply the rubric, and
+     every image** in `data/images/<id>/` (multimodal), **read the research bundle
+     `data/research/<id>.json`** for the Stage-2 cross-check, apply the rubric, and
      **WRITE its results with the Write tool to `data/_verdicts_w_<letter>.json`**
      (a JSON array; NOT the DB — avoids concurrent SQLite writes).
    - Each verdict includes `disposition` ("keep"/"reject") + `reject_reason`,
-     `category`, scores, `sqft_estimate`, `verdict_summary`, `recommendation`.
+     `category`, scores, `sqft_estimate`, `verdict_summary`, `recommendation`,
+     and `verification` (the Stage-2 outcomes).
    - Apply all batches at once: `py tools/apply_verdicts.py` (merges every
      `data/_verdicts*.json`; rejects rooms/wanted/out-of-area, keeps scams
      flagged). Delete the batch files after.
@@ -192,23 +204,29 @@ viewing of the local DB but is no longer the dashboard's data source.
    http://localhost:8000 (`py scripts/serve.py`) shows one tile per unit with the
    duplicate source links inside (best first).
 
-## Vetting rubric
-**Separate "polish" from "legitimacy." Never reject a post just for being
-amateurish.** A real non-tech landlord may post two blurry phone photos and a
-terse description — that is normal and should pass (mark `low_polish: true`, do
-NOT lower `legit_score` for it). The user explicitly wants to see these.
+## Vetting rubric — TWO STAGES, ASYMMETRIC
+**Core rule: verification only ever RAISES trust; only positive scam evidence
+LOWERS it; "can't tell" is NEUTRAL and the listing is still surfaced.** Never push
+an honest-but-unprovable post toward scam — small landlords, subletters, amateur,
+unlicensed, and cheap posts are exactly what the user wants to see. Read the post
+(`py scripts/db.py show <id>`), EVERY photo in `data/images/<id>/`, AND the
+research bundle `data/research/<id>.json`. Score two independent things: a FRAUD
+level (only the Stage-1/Stage-2 scam signals raise it) and a CONFIDENCE level
+(only verifications raise it). `legit_label`: `likely-legit` (🟢), `unverified-
+amateur` (🟡 plausible but unproven — KEEP & surface), `likely-scam` (🔴 filtered
+from alerts).
 
-Lower `legit_score` only for **true scam signals**:
-- Price clearly too good to be true for that unit/neighborhood.
-- Stock / watermarked / MLS / obviously stolen photos; photos internally
-  inconsistent (different units stitched together).
-- "I'm out of the country / can't show it in person."
-- Wire / Zelle / gift-card / deposit demanded **before any viewing**.
-- Immediately pushes you off-platform; asks for SSN or big app fee upfront.
-- The same photos reused across multiple posts.
-
-Set `legit_label`: `likely-legit` (🟢), `unverified-amateur` (🟡, plausible but
-unproven — keep & surface), or `likely-scam` (🔴, filtered from notifications).
+**Stage 1 — the post + photos.** Separate "polish" from "legitimacy." NEVER lower
+`legit_score` for amateurism (two blurry phone photos + terse text is normal →
+`low_polish:true`), for a missing license, for no sqft, or for below-market price
+by itself. Lower it ONLY for true scam signals:
+- Stolen / stock / watermarked / MLS photos; photos internally inconsistent.
+- "Out of the country / can't show in person," or refuses any LIVE tour — a
+  pre-recorded "video tour" or a lockbox self-showing is NOT live verification
+  and is itself a scam tell.
+- Wire / Zelle / gift-card / deposit or application fee demanded BEFORE a viewing.
+- Pushes off-platform immediately; asks SSN / large fee upfront.
+- Price PHYSICALLY implausible (graded, like-for-like — see Stage 2).
 
 **SHARED-ROOM GATE (reject hard — the #1 false-positive to catch).** A private
 room in a shared unit is NOT a 1BR, no matter what the title, the source's
@@ -229,6 +247,28 @@ top pick**; mark `legit_label:"unverified-amateur"` and call out in
 `verdict_summary` that share-vs-unit is unconfirmed. Prefer cross-checking the
 source URL/original post. **It is fine to send NOTHING for the day — a missed
 shared room is worse than an empty result.**
+
+**Stage 2 — semantic cross-check of `data/research/<id>.json`** (the script only
+FETCHED facts; YOU match/verify — semantic, not exact-string):
+- `dre`: if the post cites a license, does the licensed `name` semantically match
+  the lister's name? `status` active? → match = boost; name MISMATCH / revoked /
+  fake = strong scam flag (a real # under a different name = a stolen license).
+  NO license = NEUTRAL (small landlords / subletters don't have one).
+- `owner`: is `owner.match` a real residential parcel, and do its `use`/`units`
+  fit the post? (a "whole 3BR house" vs a 1-unit condo, or an address that's not a
+  parcel = flag.) Owner NAME isn't in free SF data — only flag clear contradictions.
+- `market.ratio_vs_median`: `≳0.85` normal · `0.6–0.85` plausible (rent control /
+  deals → neutral) · `<~0.55` implausible → fraud evidence. Like-for-like
+  (room↔room, 1br↔1br). Cheap ALONE is never a verdict.
+- `siblings`: same-address/coords reposts can be LEGIT (owner re-posting with a
+  better title — same price/beds/photos) OR a SCAM FLOOD (many posts with
+  differing prices/photos/contact). A shared photo or contact at a DIFFERENT
+  address = stolen photos / spam ring = strong flag. Judge semantically.
+Record each check in the verdict's `verification` object. A confirmed cross-check
+(DRE match, real parcel, consistent siblings) → `likely-legit`; a contradiction →
+`likely-scam`; neither → `unverified-amateur` (still surfaced). **Contact-stage
+tip (manual): before sending money/info, the killer test is whether they'll do a
+LIVE tour — paste their reply and re-check.**
 
 **Fit score (0–100):** 1BR/1BA **and a WHOLE 2+ bedroom unit (house/flat)** are
 BOTH top tier (big boost) — do NOT penalize a listing for having 2+ bedrooms;
@@ -265,9 +305,19 @@ do not penalize.
   "is_1br1ba": true,
   "room_type": "1br",
   "verdict_summary": "Real 1BR in Inner Richmond, consistent photos, normal terms.",
-  "recommendation": "Strong match — email today to schedule a viewing."
+  "recommendation": "Strong match — email today to schedule a viewing.",
+  "verification": {
+    "dre":       {"outcome": "match",      "note": "DRE 01234567 = lister's name, active"},
+    "owner":     {"outcome": "ok",         "note": "real 3-unit residential parcel"},
+    "price":     {"outcome": "plausible",  "note": "$1,950 vs ~$2,900 median (ratio 0.67)"},
+    "duplicates":{"outcome": "ok",         "note": "no flood; single post"}
+  }
 }
 ```
+`verification` is the Stage-2 cross-check (omit a key you couldn't check; each is
+`{outcome, note}` where outcome ∈ verified/match/ok/plausible · neutral/unverified
+· flag/mismatch/scam/flood/implausible). It is stored, synced, and shown on the
+dashboard. Absent verification is fine — it just leaves trust unchanged.
 `is_1br1ba` is literal (true only for an actual 1BR/1BA). A **whole 2+ bed** is
 NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
 **high `fit_score`** and set `room_type:"2br_plus"` (the dashboard badges it
@@ -275,9 +325,16 @@ NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
 
 ## Scripts
 - `scripts/fetch_listings.py` — multi-pass discovery → DB stubs.
-- `scripts/fetch_detail.py` — parse post + download photos.
-- `scripts/save_verdict.py` — persist your verdict.
-- `scripts/notify.py` — Telegram cards (thresholded; scams blocked).
+- `scripts/fetch_detail.py` — parse post + download photos (+ phone/email/DRE#).
+- `scripts/research.py` — Stage-2: assemble `data/research/<id>.json` (DRE + owner
+  + market range + duplicate siblings) for the vetting subagent to cross-check.
+- `scripts/verify_dre.py` — look up a CA DRE license (name/status/broker/discipline)
+  via the free public lookup; `extract_dre()` parses license #s from a post body.
+- `scripts/owner_lookup.py` — assessor parcel facts for an address/coords (DataSF).
+- `scripts/market_comps.py` — cache of external market-rent ranges per
+  (area_group, room_type); filled by the orchestrator via WebSearch (`set`).
+- `tools/apply_verdicts.py` — merge batch verdicts into the DB (rooms/etc rejected).
+- `scripts/notify.py` — Telegram digest (thresholded; scams blocked).
 - `scripts/sync_supabase.py` — publish the minimal cloud read-model to Supabase.
 - `scripts/serve.py` — local map dashboard of the LOCAL db (http://localhost:8000).
 - `scripts/db.py` — SQLite schema + CLI (`init`, `list`, `show`, `set-status`).

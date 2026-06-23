@@ -66,7 +66,8 @@ sqft floor, and the Telegram notify thresholds.
 ```
 py scripts/fetch_listings.py --area "Inner Richmond" --room 1br
 py scripts/fetch_detail.py 7934851693
-py scripts/save_verdict.py 7934851693 --json "{...}"
+py scripts/research.py 7934851693          # Stage-2 research bundle
+py scripts/verify_dre.py 01717299          # check a CA DRE license
 py scripts/notify.py 7934851693 --force
 py scripts/db.py list --status vetted
 py scripts/db.py show 7934851693

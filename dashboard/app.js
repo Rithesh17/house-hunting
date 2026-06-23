@@ -415,6 +415,23 @@ function openFromHash() {
 }
 
 /* ----------------------------------------------------------- dossier modal */
+/* Stage-2 cross-check (DRE / ownership / price / duplicates), when present. Each
+ * entry is {outcome, note}; outcome drives the icon. Verification only ever adds
+ * confidence — absence of it is neutral, not negative. */
+function verificationHtml(v) {
+  if (!v || typeof v !== "object") return "";
+  const ICON = { verified: "✅", match: "✅", boost: "✅", ok: "✅", plausible: "✅",
+    confirmed: "✅", flag: "⚠️", mismatch: "⚠️", scam: "⚠️", fraud: "⚠️",
+    implausible: "⚠️", flood: "⚠️", neutral: "•", unverified: "•", unknown: "•" };
+  const rows = Object.entries(v).map(([k, val]) => {
+    const o = (val && typeof val === "object") ? val : { note: String(val) };
+    const ic = ICON[(o.outcome || "").toLowerCase()] || "•";
+    const note = esc(o.note || o.outcome || "");
+    return `<li>${ic} <b>${esc(k)}</b>${note ? ": " + note : ""}</li>`;
+  }).join("");
+  return rows ? `<div class="flags verif"><h4>🔎 Verification</h4><ul>${rows}</ul></div>` : "";
+}
+
 function openModal(id) {
   const d = LISTINGS.find((x) => x.id === id);
   if (!d) return;
@@ -471,6 +488,7 @@ function openModal(id) {
       <div class="vblock">
         ${d.verdict_summary ? `<h4>Assessment</h4><p>${esc(d.verdict_summary)}</p>` : ""}
         ${flags}
+        ${verificationHtml(d.verification)}
         ${d.recommendation ? `<h4>Recommendation</h4><p>${esc(d.recommendation)}</p>` : ""}
         <h4>The listing</h4>
         <div class="desc">Full post text lives on the original listing —

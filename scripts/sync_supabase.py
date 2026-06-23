@@ -50,6 +50,19 @@ def _json_list(val):
         return []
 
 
+def _json_obj(val):
+    """Parse a stored JSON object column (verification) to a dict, else None."""
+    if not val:
+        return None
+    if isinstance(val, dict):
+        return val
+    try:
+        out = json.loads(val)
+        return out if isinstance(out, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
 def _source_entry(d: dict) -> dict:
     return {
         "url": d.get("url"), "source": d.get("source"), "price": d.get("price"),
@@ -82,7 +95,7 @@ def build_rows(conn) -> list[dict]:
         # actual location — the geocoded/post neighbourhood name + coords.
         area = geo.classify(primary.get("lat"), primary.get("lng"),
                             primary.get("area"), primary.get("neighborhood"))
-        out.append({
+        row = {
             "id": primary["id"],
             "area_tier": area["area_tier"],
             "proximity_km": None,  # no longer computed (flat model, no work-distance)
@@ -111,7 +124,13 @@ def build_rows(conn) -> list[dict]:
             "dup_count": len(members),
             "sources": [_source_entry(m) for m in members],
             "first_seen_at": primary.get("first_seen_at"),
-        })
+        }
+        # Only send verification once the cloud column exists (apply migration
+        # 0002 first). Null for every row today, so omitted -> sync stays working.
+        ver = _json_obj(primary.get("verification"))
+        if ver is not None:
+            row["verification"] = ver
+        out.append(row)
     return out
 
 
