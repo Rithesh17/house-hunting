@@ -120,16 +120,12 @@ def build_rows(conn) -> list[dict]:
             "fit_score": primary.get("fit_score"),
             "verdict_summary": primary.get("verdict_summary"),
             "recommendation": primary.get("recommendation"),
+            "verification": _json_obj(primary.get("verification")),  # null if unvetted
             "status": primary.get("status"),
             "dup_count": len(members),
             "sources": [_source_entry(m) for m in members],
             "first_seen_at": primary.get("first_seen_at"),
         }
-        # Only send verification once the cloud column exists (apply migration
-        # 0002 first). Null for every row today, so omitted -> sync stays working.
-        ver = _json_obj(primary.get("verification"))
-        if ver is not None:
-            row["verification"] = ver
         out.append(row)
     return out
 
