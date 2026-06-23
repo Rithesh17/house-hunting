@@ -41,17 +41,22 @@ _SF_BOUNDS = {"west": -122.5160, "east": -122.3540, "south": 37.7034, "north": 3
 _PHOTO_RE = re.compile(r"https://photos\.zillowstatic\.com/[^\s\"'\\]+")
 
 
-def search_url(max_price: int) -> str:
-    """A Zillow SF / For-Rent / <=max_price / newest-first search URL."""
+def search_url(max_price: int, days: int = 7) -> str:
+    """A Zillow SF / For-Rent / <=max_price / newest-first search URL, restricted to
+    listings added in the last `days` (Zillow's 'days on Zillow' filter) so each run
+    pulls only recent listings — incremental + minimal Apify billing. `days<=0`
+    drops the recency filter (full pull)."""
+    fs = {
+        "fore": {"value": False}, "auc": {"value": False}, "nc": {"value": False},
+        "fsbo": {"value": False}, "cmsn": {"value": False}, "fsba": {"value": False},
+        "fr": {"value": True},          # for rent
+        "mp": {"max": max_price},        # monthly rent max
+        "sort": {"value": "days"},       # newest first
+    }
+    if days and days > 0:
+        fs["doz"] = {"value": str(days)}  # days on Zillow (recency)
     sqs = {
-        "isMapVisible": False, "mapBounds": _SF_BOUNDS,
-        "filterState": {
-            "fore": {"value": False}, "auc": {"value": False}, "nc": {"value": False},
-            "fsbo": {"value": False}, "cmsn": {"value": False}, "fsba": {"value": False},
-            "fr": {"value": True},          # for rent
-            "mp": {"max": max_price},        # monthly rent max
-            "sort": {"value": "days"},       # newest first
-        },
+        "isMapVisible": False, "mapBounds": _SF_BOUNDS, "filterState": fs,
         "isListVisible": True,
         "regionSelection": [{"regionId": 20330, "regionType": 6}],  # San Francisco
         "pagination": {},
@@ -60,8 +65,8 @@ def search_url(max_price: int) -> str:
             + urllib.parse.quote(json.dumps(sqs)))
 
 
-def run_actor(max_price: int, max_items: int) -> list[dict]:
-    body = {"searchUrls": [{"url": search_url(max_price)}],
+def run_actor(max_price: int, max_items: int, days: int) -> list[dict]:
+    body = {"searchUrls": [{"url": search_url(max_price, days)}],
             "extractionMethod": "PAGINATION"}
     r = requests.post(
         f"https://api.apify.com/v2/acts/{ACTOR}/run-sync-get-dataset-items"
@@ -89,13 +94,16 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--max-items", type=int, default=40,
                     help="cap billable results per run (default 40)")
+    ap.add_argument("--days", type=int, default=7,
+                    help="only listings added in the last N days on Zillow "
+                         "(default 7; 0 = no recency filter / full pull)")
     args = ap.parse_args()
     cfg = common.load_config()
     max_price = cfg["max_price"]
 
     print(f"[zillow] querying Apify actor (SF, for-rent, <=${max_price}, newest, "
-          f"max {args.max_items})...")
-    items = run_actor(max_price, args.max_items)
+          f"last {args.days}d, max {args.max_items})...")
+    items = run_actor(max_price, args.max_items, args.days)
     print(f"  {len(items)} listings returned")
 
     conn = db.connect()
