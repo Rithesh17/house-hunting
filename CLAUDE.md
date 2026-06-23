@@ -265,12 +265,20 @@ FETCHED facts; YOU match/verify — semantic, not exact-string):
   differing prices/photos/contact). A shared photo or contact at a DIFFERENT
   address = stolen photos / spam ring = strong flag. Judge semantically.
 - `web_checks` — **run these with `WebSearch`** (the bundle suggests the queries):
-  search the address to see if the SAME property is listed ELSEWHERE. If it shows
-  up on Zillow / Apartments.com / Redfin etc. at a **much higher** real rent, or
-  is listed **FOR SALE**, the post is a cloned/hijacked listing → strong scam flag
-  (this is how 3870 Sacramento and 133 Caine Ave were caught). A *consistent*
-  price on a legit channel = corroboration (boost). Also search the phone / agent
-  name for reuse across unrelated listings or scam-report hits.
+  search the address to see if the SAME property is listed ELSEWHERE. What matters
+  is a **contradiction**, NOT mere presence (aggregators like Apartments.com /
+  HotPads often just re-host the Craigslist post — ignore those echoes):
+  - **FLAG** only if the same unit shows a **much higher real rent** (a big gap —
+    e.g. $1,650 here vs $2,800 there → cloned + undercut bait) OR is listed **FOR
+    SALE** (photos lifted from a sale listing). This caught 3870 Sacramento & 133
+    Caine Ave. A much-higher price counts EVEN IF that listing is now "unavailable"
+    — it still reveals the unit's real rent, which makes the cheap post implausible.
+  - **NEUTRAL / fine** (do NOT flag): no other listing at all (landlords often
+    post only on Craigslist); the other listing merely shows "unavailable / off-
+    market / expired" at a **comparable** price; or only aggregator echoes of this
+    same post. Comparable price = corroboration (a small boost).
+  Also search the phone / agent name for reuse across unrelated listings or
+  scam-report hits.
 Record each check in the verdict's `verification` object. A confirmed cross-check
 (DRE match, real parcel, consistent siblings) → `likely-legit`; a contradiction →
 `likely-scam`; neither → `unverified-amateur` (still surfaced). **Contact-stage

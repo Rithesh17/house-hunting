@@ -101,10 +101,12 @@ def _web_checks(row, dre: dict | None) -> list[dict]:
     addr = (row["address"] or "").strip()
     if addr:
         out.append({
-            "purpose": "Is this SAME address listed elsewhere? Compare the price; "
-                       "a much-higher real rent, or a FOR-SALE listing, = "
-                       "cloned/stolen listing (scam). A consistent price on a legit "
-                       "site = corroboration.",
+            "purpose": "Is this SAME address listed elsewhere? FLAG only on a "
+                       "CONTRADICTION: a much-higher real rent (big gap = cloned + "
+                       "undercut bait, counts even if that listing is now "
+                       "'unavailable') or a FOR-SALE listing (stolen photos). "
+                       "Comparable price, or no other listing, or just aggregator "
+                       "echoes of this post = fine (do not flag).",
             "query": f'"{addr}" San Francisco rent OR "for sale"'})
     if row["phone"]:
         out.append({"purpose": "phone reused across unrelated listings / scam reports",
