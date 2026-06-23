@@ -80,6 +80,18 @@ def classify(lat, lng, area_text: str | None = None,
             "unsafe": False}
 
 
+AVOID_MATCH_FACTOR = 0.3  # unsafe areas read as LOW match (≤30), not 0 — order kept
+
+
+def display_match(fit_score, area_tier) -> int:
+    """Area-aware MATCH for display/ranking. The subagent scores fit on the unit
+    alone (size/condition/value); this folds the area in so an UNSAFE ('avoid')
+    area reads as a low match — a fine unit in a bad-for-you area is still a poor
+    fit. Trust (legit_score) is untouched: it measures scam-risk, not desirability."""
+    f = fit_score or 0
+    return round(f * AVOID_MATCH_FACTOR) if area_tier == "avoid" else f
+
+
 def sort_key(row) -> tuple:
     """Ranking key: unsafe ('avoid') areas sink to the bottom; everything else is
     a level field ranked by MATCH (fit) desc, then trust (legit) desc. `row`

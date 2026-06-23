@@ -31,6 +31,12 @@ mechanical work and personally do the **vision vetting + fit ranking**.
   areas are a level field ranked by match (fit), then trust (legit). **Unsafe
   ("avoid") areas** sink to the bottom (badged "unsafe area", excluded from
   Featured + Telegram alerts). No favorites float; no proximity-to-work ordering.
+- **MATCH is area-aware; TRUST is not.** The subagent scores `fit_score` on the
+  UNIT alone; at publish time `geo.display_match()` folds area in, so an unsafe
+  area reads as a LOW match (≤30) even if the unit is nice — a good unit in a
+  bad-for-you area is a poor fit. **Trust (`legit_score`) is never penalized for
+  area** — it measures scam-risk only, so a real property-manager studio in the
+  Tenderloin is correctly high-trust + low-match (and excluded from picks anyway).
 - **Area model is deterministic** (`scripts/geo.py` + the `unsafe:` block in
   `config.yaml`): each listing is classified into a **binary** tier —
   `avoid` (unsafe) or `ok`. Classification uses the listing's ACTUAL location:

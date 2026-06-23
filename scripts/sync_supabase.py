@@ -117,7 +117,9 @@ def build_rows(conn) -> list[dict]:
             "legit_score": primary.get("legit_score"),
             "legit_label": primary.get("legit_label"),
             "red_flags": _json_list(primary.get("red_flags")),
-            "fit_score": primary.get("fit_score"),
+            # MATCH is area-aware: unsafe areas read low even if the unit is nice
+            # (the local fit_score stays the raw unit score).
+            "fit_score": geo.display_match(primary.get("fit_score"), area["area_tier"]),
             "verdict_summary": primary.get("verdict_summary"),
             "recommendation": primary.get("recommendation"),
             "verification": _json_obj(primary.get("verification")),  # null if unvetted
