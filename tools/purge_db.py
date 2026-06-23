@@ -4,10 +4,12 @@ re-discovered or re-vetted on later pulls (otherwise every refresh would re-pull
 re-vet all the unsafe-area posts and re-bill Apify).
 
 POLICY (keep the DB to only what's worth seeing):
-  DELETE a listing if EITHER
-    - low trust  : legit_score < 40 (includes confirmed scams), or
-    - unsafe area: area_tier == 'avoid' (computed from coords/area via geo.py)
-  KEEP: ok-area listings with trust >= 40 (and still-unvetted ok-area rows).
+  DELETE a listing if ANY of:
+    - rejected/removed: status in ('rejected','removed') (rooms/SROs/dead links), or
+    - low trust       : legit_score < 40 (includes confirmed scams), or
+    - unsafe area      : area_tier == 'avoid' (computed from coords/area via geo.py)
+  KEEP: ok-area listings with trust >= 40 (incl. flagged-scam rows at trust >= 40,
+  which we deliberately keep visible; and still-unvetted ok-area rows).
 
 Dry-run by default (prints what WOULD go); pass --execute to actually delete.
 
@@ -28,6 +30,8 @@ TRUST_FLOOR = 40
 
 
 def _reason(row, tier) -> str | None:
+    if row["status"] in ("rejected", "removed"):
+        return f"{row['status']} (room/SRO/dead — out of pool)"
     ls = row["legit_score"]
     if ls is not None and ls < TRUST_FLOOR:
         lab = row["legit_label"] or "low-trust"
@@ -52,7 +56,9 @@ def main() -> None:
         reason = _reason(r, tier)
         if reason:
             victims.append((r["id"], r["source"], reason))
-            by_reason["low trust (<40)" if reason.startswith("low") else "unsafe area"] += 1
+            bucket = ("rejected/removed" if reason.startswith(("rejected", "removed"))
+                      else "low trust (<40)" if reason.startswith("low") else "unsafe area")
+            by_reason[bucket] += 1
             by_source[r["source"]] += 1
 
     total = len(rows)

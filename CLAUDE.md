@@ -107,9 +107,12 @@ This is the full cycle. Run it end to end:
 3. `py tools/apply_verdicts.py` (merges the batch files; reject rooms/etc., keep
    scams flagged), then delete the batch files.
 4. `py tools/dedup.py` (re-cluster with the new verdicts so primaries are best).
+4b. `py tools/purge_db.py --execute` — DELETE rejected/removed + low-trust(<40) +
+   unsafe-area rows (blocklisted so they don't re-surface), keeping ok-area trust≥40.
+   Keeps the DB + dashboard to only what's worth seeing.
 5. `py scripts/sync_supabase.py` — **publish to the cloud** so the public
-   dashboard updates (re-run after vetting so new scores/dedup land). `refresh.py`
-   already runs this once at the end; run it again here after `apply_verdicts`.
+   dashboard updates (re-run after vetting/purge so new scores/dedup land + purged
+   rows drop). `refresh.py` already runs this once at the end; run it again here.
 6. **Telegram — ONE digest of the qualifying NEW picks from this fetch.**
    `py scripts/notify.py --new` sends a single short, text-only message of the
    un-notified, qualifying picks from this fetch (NOT the top-N overall): each =
@@ -132,6 +135,12 @@ local SQLite (`data/listings.db`, the source of truth, gitignored). `sync_supaba
 then pushes a **minimal** read-model to **Supabase** (Postgres): one row per
 deduped unit with identity + display essentials + remote `image_urls` + Claude's
 verdict (scores/summary/recommendation/red_flags) + an embedded `sources` list.
+The cloud carries ONLY listings worth seeing — `sync` skips `rejected` + `removed`
+(`SKIP_STATUS`), and `tools/purge_db.py` deletes rejected/removed, low-trust
+(`legit_score<40`), and unsafe-area (`avoid`) rows from the local DB entirely
+(blocklisting their ids so they don't re-surface). So the dashboard = ok-area,
+non-rejected units (flagged-scam rows at trust ≥ 40 are kept, badged, hidden from
+picks).
 Because the local DB is gitignored and not always present, the cloud doubles as a
 **recovery backup**: `scripts/hydrate_from_supabase.py` (step 0 of `refresh.py`)
 rebuilds the local DB from Supabase — every cloud unit becomes a full local row
@@ -367,10 +376,11 @@ NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
 - `scripts/market_comps.py` — cache of external market-rent ranges per
   (area_group, room_type); filled by the orchestrator via WebSearch (`set`).
 - `tools/apply_verdicts.py` — merge batch verdicts into the DB (rooms/etc rejected).
-- `tools/purge_db.py` — DELETE listings we don't keep (trust `legit_score<40`, OR
-  unsafe `area_tier=='avoid'`) and add their ids to a **blocklist** so they're never
-  re-pulled/re-vetted; keeps ok-area + trust≥40. Dry-run by default; `--execute`
-  to delete, then `sync_supabase.py` drops them from the cloud. Run after vetting.
+- `tools/purge_db.py` — DELETE listings we don't keep (`status` rejected/removed,
+  trust `legit_score<40`, OR unsafe `area_tier=='avoid'`) and add their ids to a
+  **blocklist** so they're never re-pulled/re-vetted; keeps ok-area + trust≥40
+  (incl. flagged-scam rows at trust≥40). Dry-run by default; `--execute` to delete,
+  then `sync_supabase.py` drops them from the cloud. Run after vetting each refresh.
 - `scripts/notify.py` — Telegram digest (thresholded; scams blocked).
 - `scripts/sync_supabase.py` — publish the minimal cloud read-model to Supabase.
 - `scripts/serve.py` — local map dashboard of the LOCAL db (http://localhost:8000).

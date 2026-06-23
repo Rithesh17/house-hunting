@@ -34,8 +34,8 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 REST = f"{SUPABASE_URL}/rest/v1/listings" if SUPABASE_URL else None
 
-# Listings in these states are not shown on the dashboard at all.
-SKIP_STATUS = {"removed"}
+# Listings in these states are never published to the cloud/dashboard read-model.
+SKIP_STATUS = {"rejected", "removed"}
 
 
 def _json_list(val):
