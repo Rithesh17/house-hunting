@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import random
 import subprocess
 import sys
 import time
@@ -61,20 +63,47 @@ def _mouse(t, x, y, **kw):
     p = {"type": t, "x": x, "y": y}; p.update(kw)
     _call("cdp.input.InputService/DispatchMouseEvent", p)
 
-def _bezier(S, E, n=14, delay=0.04):
-    C1 = (S[0] + (E[0]-S[0])*0.3, S[1] + (E[1]-S[1])*0.1)
-    C2 = (S[0] + (E[0]-S[0])*0.7, E[1] + (S[1]-E[1])*0.1)
+def _smooth(t):  # smootherstep -> slow start, fast middle, slow end (ease-in-out)
+    return t * t * t * (t * (t * 6 - 15) + 10)
+
+def _bezier(S, E, n=None):
+    """Human-ish cursor path: a bowed cubic Bezier, sampled with ease-in-out timing
+    (slow at the ends), small positional jitter, and randomized control points."""
+    dist = math.hypot(E[0]-S[0], E[1]-S[1])
+    n = n or max(10, min(36, int(dist / 14)))
+    bow = random.uniform(0.12, 0.32) * (1 if random.random() < 0.5 else -1)
+    C1 = (S[0]+(E[0]-S[0])*0.33 + random.uniform(-30, 30), S[1]+(E[1]-S[1])*0.33 + dist*bow*0.5)
+    C2 = (S[0]+(E[0]-S[0])*0.66 + random.uniform(-30, 30), S[1]+(E[1]-S[1])*0.66 + dist*bow*0.5)
     for i in range(n + 1):
-        t = i / n; mt = 1 - t
-        _mouse("mouseMoved",
-               round(mt**3*S[0]+3*mt*mt*t*C1[0]+3*mt*t*t*C2[0]+t**3*E[0], 1),
-               round(mt**3*S[1]+3*mt*mt*t*C1[1]+3*mt*t*t*C2[1]+t**3*E[1], 1))
-        time.sleep(delay)
+        u = _smooth(i / n); mt = 1 - u
+        x = mt**3*S[0]+3*mt*mt*u*C1[0]+3*mt*u*u*C2[0]+u**3*E[0] + random.uniform(-1.3, 1.3)
+        y = mt**3*S[1]+3*mt*mt*u*C1[1]+3*mt*u*u*C2[1]+u**3*E[1] + random.uniform(-1.3, 1.3)
+        _mouse("mouseMoved", round(x, 1), round(y, 1))
+        time.sleep(random.uniform(0.008, 0.02))
+    return E
 
 def human_click(E, start=(640, 430)):
-    _bezier(start, E); time.sleep(0.16)
-    _mouse("mousePressed", E[0], E[1], button="left", buttons=1, click_count=1); time.sleep(0.09)
+    # approach with a slight overshoot, then a small correction onto the target
+    over = (E[0] + random.uniform(-7, 7), E[1] + random.uniform(-6, 6))
+    _bezier(start, over)
+    time.sleep(random.uniform(0.04, 0.11))
+    _bezier(over, E, n=5)
+    time.sleep(random.uniform(0.13, 0.30))   # aim/settle before pressing
+    _mouse("mouseMoved", E[0], E[1])
+    _mouse("mousePressed", E[0], E[1], button="left", buttons=1, click_count=1)
+    time.sleep(random.uniform(0.05, 0.13))
     _mouse("mouseReleased", E[0], E[1], button="left", buttons=0, click_count=1)
+
+def warmup():
+    """Look like a human reading: a couple of idle cursor wanders + scroll down/up."""
+    _bezier((random.randint(250, 450), random.randint(180, 280)),
+            (random.randint(520, 820), random.randint(320, 520)))
+    for dy in (random.randint(350, 600), random.randint(250, 450), -random.randint(300, 550)):
+        _mouse("mouseWheel", random.randint(450, 650), random.randint(350, 450), deltaX=0, deltaY=dy)
+        time.sleep(random.uniform(0.5, 1.2))
+    _bezier((random.randint(500, 800), random.randint(300, 500)),
+            (random.randint(200, 400), random.randint(150, 300)))
+    time.sleep(random.uniform(0.4, 0.9))
 
 def _poll(get, ok, timeout=14, every=0.5):
     end = time.time() + timeout
@@ -120,10 +149,12 @@ def fetch_contact(url: str) -> dict:
     Returns {email, phone, options, ok, note}."""
     _call("cdp.emulation.EmulationService/ClearDeviceMetricsOverride", {})
     navigate(url)
-    time.sleep(3)
+    time.sleep(random.uniform(2.5, 4.0))
+    warmup()                       # idle wander + scroll, like a human reading first
     rb = ev(REPLY)
     if not isinstance(rb, dict):
         return {"ok": False, "note": "no reply button (taken down / blocked)"}
+    time.sleep(random.uniform(0.4, 1.1))
     human_click((rb["cx"], rb["cy"]))
     # wait for the async reply panel, then let all option headers (email/call/text) load
     got = _poll(lambda: ev(OPTION_NAMES), lambda v: isinstance(v, list) and len(v) > 0, timeout=14)
