@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS listings (
     verdict_summary TEXT,
     recommendation  TEXT,
     verification    TEXT,                  -- JSON: Stage-2 cross-check {dre,owner,price,duplicates}
+    source_extra    TEXT,                  -- JSON: source-specific signals (Zillow: room flags, rentZestimate, parcel, listedBy, priceHistory)
     -- bookkeeping --
     first_seen_at TEXT,
     detail_fetched_at TEXT,
@@ -103,7 +104,7 @@ CREATE TABLE IF NOT EXISTS blocklist (
 """
 
 # Columns added after the original schema shipped; ALTER them onto older DBs.
-_ADDED_COLUMNS = {"dre_number": "TEXT", "verification": "TEXT"}
+_ADDED_COLUMNS = {"dre_number": "TEXT", "verification": "TEXT", "source_extra": "TEXT"}
 
 
 def migrate(conn: sqlite3.Connection) -> None:
@@ -245,6 +246,11 @@ def row_to_dict(row: sqlite3.Row) -> dict:
             d["red_flags"] = []
     else:
         d["red_flags"] = []
+    if d.get("source_extra"):
+        try:
+            d["source_extra"] = json.loads(d["source_extra"])
+        except (json.JSONDecodeError, TypeError):
+            d["source_extra"] = None
     return d
 
 

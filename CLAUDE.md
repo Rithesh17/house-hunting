@@ -101,9 +101,14 @@ Craigslist,"* *"any new places today?"* — run the pipeline below end to end.
   re-stored/re-vetted. Unlike the old actor, this returns **many photos + the full
   description** (`fetchDetails`), so share-vs-unit IS verifiable from the photos +
   body — the SHARED-ROOM GATE applies to Zillow rows just like Craigslist. Each item
-  also carries `listingDateTimeOnZillow` (exact posted time) for `posted_at`.
-  `--no-details` skips bodies (cheaper). Replaced the old `maxcopell/zillow-scraper`
-  (1 photo, no body, $0.002/result).
+  also carries `listingDateTimeOnZillow` (exact posted time) for `posted_at`. We use
+  the structured `address` directly (not parsed from text), fall back to the
+  `_details` lat/lng so **undisclosed-address listings still get area-classified**
+  (else they'd default to `ok`), and capture extra signals into `source_extra`
+  (→ research bundle `source_signals`): Zillow's own `isRoomForRent`/`isRentByBed`
+  room flags, `rentZestimate` (free per-unit market rent), `parcelNumber`,
+  `listedBy` (agent/brokerage), and `priceHistory`. `--no-details` skips bodies
+  (cheaper). Replaced the old `maxcopell/zillow-scraper` (1 photo, no body, $0.002/result).
 Both feed the SAME downstream (vetting, dedup, dashboard). `tools/dedup.py` merges
 the same unit ACROSS sources (by shared image id, address, OR rounded coords +
 price + room_type) into one tile; the dossier lists each source's link.
@@ -296,6 +301,9 @@ description and treat any of these as a shared room → `category:"room"`,
 - a roommate / housemate / host already occupies another room in the unit
 - "utilities divided/split evenly", "rent the other room separately"
 - in-law / downstairs unit described as a single room with a kitchenette only
+- **`source_signals.is_room_for_rent: true`** in the research bundle — Zillow's OWN
+  room-share flag (so is `is_rent_by_bed`). Treat it as a strong shared-room signal
+  even if the photos look like a whole unit.
 When the description is MISSING or thin (common for **Zumper** rows — they often
 have no body text), DO NOT assume the "1br" tag is real. A bare "1 bedroom" with
 no description and only interior room photos is **unverified — never send it as a
@@ -316,6 +324,12 @@ FETCHED facts; YOU match/verify — semantic, not exact-string):
 - `market.ratio_vs_median`: `≳0.85` normal · `0.6–0.85` plausible (rent control /
   deals → neutral) · `<~0.55` implausible → fraud evidence. Like-for-like
   (room↔room, 1br↔1br). Cheap ALONE is never a verdict.
+  - `market.ratio_vs_zestimate` (Zillow rows): same grading vs Zillow's per-listing
+    `rent_zestimate` — a free, unit-specific market reference (no web lookup needed).
+- `source_signals` (Zillow): besides the room flags, `price_history` can reveal the
+  unit's real prior rent (e.g. listed $2,800 in 2024 vs "$1,200" now → clone/undercut
+  evidence, same logic as web_checks); `listed_by` is the listing agent/brokerage to
+  sanity-check vs the post + DRE; `parcel_number` is the real APN for the owner check.
 - `siblings`: same-address/coords reposts can be LEGIT (owner re-posting with a
   better title — same price/beds/photos) OR a SCAM FLOOD (many posts with
   differing prices/photos/contact). A shared photo or contact at a DIFFERENT

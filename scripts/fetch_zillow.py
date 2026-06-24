@@ -130,6 +130,48 @@ def _posted_at(item: dict) -> str | None:
         return None
 
 
+def _listed_by(det: dict) -> str | None:
+    """Agent / brokerage display names from _details.listedBy (list or dict)."""
+    lb = det.get("listedBy")
+    items = lb if isinstance(lb, list) else [lb] if isinstance(lb, dict) else []
+    names = []
+    for e in items:
+        if isinstance(e, dict):
+            for k in ("display_name", "business_name", "name"):
+                v = e.get(k)
+                if v and v not in names:
+                    names.append(v)
+    return ", ".join(names) or None
+
+
+def _price_history(det: dict, n: int = 5) -> list[dict]:
+    """Compact recent priceHistory events: {date, price, event}."""
+    out = []
+    for e in (det.get("priceHistory") or [])[:n]:
+        if isinstance(e, dict):
+            out.append({"date": e.get("date"), "price": e.get("price"), "event": e.get("event")})
+    return out
+
+
+def _source_extra(it: dict, det: dict) -> dict:
+    """Zillow signals worth carrying into vetting: room-share flags (Zillow's own),
+    its market rent estimate, the parcel #, the listing agent, and price history.
+    Falsy/empty values are dropped (so `is_room_for_rent` only appears when True)."""
+    rental = it.get("rental") or {}
+    est = it.get("estimates") or {}
+    rf = det.get("resoFacts") or {}
+    extra = {
+        "is_room_for_rent": rental.get("isRoomForRent"),
+        "is_rent_by_bed": rental.get("isRentByBed"),
+        "rent_zestimate": est.get("rentZestimate") or det.get("rentZestimate"),
+        "zestimate": det.get("zestimate"),
+        "parcel_number": rf.get("parcelNumber") or det.get("parcelId"),
+        "listed_by": _listed_by(det),
+        "price_history": _price_history(det),
+    }
+    return {k: v for k, v in extra.items() if v not in (None, "", [], False)}
+
+
 def main() -> None:
     if not APIFY_TOKEN:
         raise SystemExit("APIFY_TOKEN not set in .env")
@@ -178,11 +220,17 @@ def main() -> None:
         if street and "undisclosed" in street.lower():
             street = None
         loc = it.get("location") or {}
-        lat, lng = loc.get("latitude"), loc.get("longitude")
         det = it.get("_details") or {}
+        lat, lng = loc.get("latitude"), loc.get("longitude")
+        # Undisclosed-address listings have no top-level coords, but _details does —
+        # use it so the area model can still classify them (else they default to ok).
+        if lat is None or lng is None:
+            lat = det.get("latitude") if det.get("latitude") is not None else lat
+            lng = det.get("longitude") if det.get("longitude") is not None else lng
         description = det.get("description")
         photos = _photos(it)
         title = street or "Zillow rental"
+        extra = _source_extra(it, det)
 
         db.insert_stub(conn, post_id=pid, url=url, title=title, price=price,
                        room_type=room_type,
@@ -196,6 +244,7 @@ def main() -> None:
             "sqft": it.get("livingArea"), "lat": lat, "lng": lng, "address": street,
             "description": description,
             "image_urls": json.dumps(photos), "image_count": image_count,
+            "source_extra": json.dumps(extra) if extra else None,
         })
         # objective gate (no photos / outside SF by coords) — consistent w/ Craigslist
         reason = filters.objective_reject_reason(image_count=image_count, lat=lat, lng=lng)

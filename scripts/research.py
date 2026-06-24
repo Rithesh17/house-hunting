@@ -34,6 +34,20 @@ import owner_lookup
 import verify_dre
 
 
+def _source_extra(row) -> dict:
+    """Parsed source_extra JSON (Zillow signals) for the row, or {}."""
+    try:
+        raw = row["source_extra"]
+    except (KeyError, IndexError):
+        return {}
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+
+
 def _contacts(row) -> set[str]:
     out = set()
     for k in ("phone", "contact", "dre_number"):
@@ -92,7 +106,7 @@ def _dre_block(row) -> dict | None:
     return {"numbers_found": nums, "records": recs}
 
 
-def _web_checks(row, dre: dict | None) -> list[dict]:
+def _web_checks(row, dre: dict | None, extra: dict | None = None) -> list[dict]:
     """Suggested WebSearches for the vetting subagent (scripts can't web-search).
     The big one: is the SAME property listed elsewhere at a different price / for
     sale? That exposes cloned/hijacked listings (how 3870 Sacramento & 133 Caine
@@ -117,13 +131,25 @@ def _web_checks(row, dre: dict | None) -> list[dict]:
                         "query": f'{rec["name"]} {rec.get("employing_broker") or ""} '
                                  f'San Francisco rental'.strip()})
             break
+    lb = (extra or {}).get("listed_by")
+    if lb:
+        out.append({"purpose": "the listing agent/brokerage (from Zillow) — real SF "
+                               "listings or scam-report hits; cross-check vs the post",
+                    "query": f'{lb} San Francisco rental'})
     return out
 
 
-def _market_block(conn, row) -> dict:
+def _market_block(conn, row, extra: dict | None = None) -> dict:
     group = market_comps.area_group(row["area"])
     rng = market_comps.range_for(conn, row["area"], row["room_type"])
     block = {"area_group": group, "room_type": row["room_type"]}
+    # Zillow's per-listing rentZestimate is a free market-rent reference for THIS unit
+    # — a built-in price-plausibility check even when no cached bucket exists.
+    rz = (extra or {}).get("rent_zestimate")
+    if rz:
+        block["rent_zestimate"] = rz
+        if row["price"]:
+            block["ratio_vs_zestimate"] = round(row["price"] / rz, 2)
     if not rng:
         block["needs_lookup"] = True
         return block
@@ -140,6 +166,7 @@ def build_bundle(conn, post_id: str) -> dict | None:
         print(f"  ! {post_id} not in DB", file=sys.stderr)
         return None
     dre = _dre_block(row)
+    extra = _source_extra(row)
     bundle = {
         "id": post_id,
         "fetched_at": db.now(),
@@ -149,9 +176,12 @@ def build_bundle(conn, post_id: str) -> dict | None:
         "dre": dre,
         "owner": owner_lookup.owner_of_record(row["lat"], row["lng"], row["address"])
                  if row["lat"] is not None else {"found": False, "note": "no coords"},
-        "market": _market_block(conn, row),
+        "market": _market_block(conn, row, extra),
         "siblings": find_siblings(conn, row),
-        "web_checks": _web_checks(row, dre),
+        # Source-provided structured signals (Zillow): is_room_for_rent (a direct
+        # shared-room flag), rent_zestimate, parcel_number, listed_by, price_history.
+        "source_signals": extra or None,
+        "web_checks": _web_checks(row, dre, extra),
     }
     os.makedirs(db.RESEARCH_DIR, exist_ok=True)
     with open(os.path.join(db.RESEARCH_DIR, f"{post_id}.json"), "w") as f:
