@@ -122,9 +122,11 @@ This is the full cycle. Run it end to end:
    detail/photos/gates + prune dead links + dedupe + **Stage-2 research bundles**
    (`scripts/research.py --all-new` → `data/research/<id>.json`). It prints how
    many NEW listings need vetting AND which market buckets need a web lookup.
-   **A durable 9am cron runs this full cycle daily** (all sources incl. Zillow —
-   the day's first run); ad-hoc refreshes later in the day do Craigslist + Zumper
-   only (Zillow already pulled). See THUMB_RULES.md. The
+   **A launchd cron runs this full cycle every 4 hours** (01/05/09/13/17/21) via
+   headless Claude — the day's first run pulls all sources incl. Zillow; the other
+   five do Craigslist + Zumper only (Zillow gated once/day, free sources refresh
+   often). Those runs use `notify.py --new --quiet-if-empty` so only real new picks
+   ping Telegram (no repeated "nothing new" notes). See THUMB_RULES.md. The
    hydrate step (`scripts/hydrate_from_supabase.py`) pulls the cloud read-model
    back into local SQLite so a fresh checkout resumes WITHOUT re-vetting everything
    or letting the final sync delete cloud rows that are merely missing locally

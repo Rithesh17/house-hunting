@@ -149,6 +149,10 @@ def main() -> None:
                          "(can be a lot — prefer --top N)")
     ap.add_argument("--minimal", action="store_true",
                     help="(kept for back-compat; notifications are always short text)")
+    ap.add_argument("--quiet-if-empty", action="store_true",
+                    help="with --new, send NOTHING when no new picks qualify — for "
+                         "frequent (e.g. 4-hourly) cron runs, to avoid repeated "
+                         "'nothing new' pings. Only real picks ping.")
     args = ap.parse_args()
 
     cfg = common.load_config()
@@ -196,8 +200,9 @@ def main() -> None:
 
     if not targets:
         # For the routine --new send, still ping so the user knows the fetch ran
-        # and found nothing worth a look; otherwise just stay quiet.
-        if args.new:
+        # and found nothing worth a look; otherwise just stay quiet. --quiet-if-empty
+        # suppresses that ping (frequent cron runs ping only on a real pick).
+        if args.new and not args.quiet_if_empty:
             note = ("🏠 <b>SF House-Hunt</b>\nNo new postings worth a look this "
                     f"round.\n\n🗺 Full ledger: {_h(DASHBOARD_URL)}")
             if send_text(note):
@@ -205,7 +210,7 @@ def main() -> None:
             else:
                 print("Note send failed.", file=sys.stderr)
         else:
-            print("Nothing to notify.")
+            print("Nothing to notify (quiet).")
         conn.close()
         return
 

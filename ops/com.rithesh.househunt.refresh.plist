@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Daily 9am full house-hunting refresh (headless Claude Code).
+  Every-4-hours house-hunting refresh (headless Claude Code). Zillow gated once/day.
   NOTE: launchd cannot EXEC a script from the external volume (/Volumes/...) — macOS
   TCC returns "Operation not permitted" (exit 126). So the wrapper is installed to
   the INTERNAL disk (~/.househunt/daily_refresh.sh); it cd's into the project on the
@@ -25,13 +25,18 @@
     <string>/bin/bash</string>
     <string>/Users/rithesh/.househunt/daily_refresh.sh</string>
   </array>
+  <!-- Every 4 hours (01,05,09,13,17,21). Zillow is gated to once/calendar-day in
+       refresh.py, so only the day's first run pulls it; Craigslist + Zumper (free)
+       refresh each run. notify uses --quiet-if-empty so only real picks ping. -->
   <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>9</integer>
-    <key>Minute</key>
-    <integer>0</integer>
-  </dict>
+  <array>
+    <dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>5</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
   <key>StandardOutPath</key>
   <string>/Users/rithesh/Library/Logs/house-hunting-refresh.out.log</string>
   <key>StandardErrorPath</key>
