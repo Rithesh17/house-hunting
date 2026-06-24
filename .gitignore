@@ -1,6 +1,9 @@
 # secrets
 .env
 
+# Claude
+.claude/
+
 # data + downloaded images + transient vetting artifacts
 data/listings.db
 data/images/
