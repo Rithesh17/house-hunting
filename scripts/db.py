@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS listings (
     image_count   INTEGER DEFAULT 0,
     contact       TEXT,
     phone         TEXT,
+    reply_email   TEXT,                    -- CL relay email revealed via the reply flow (chromerpc)
+    contact_fetched_at TEXT,              -- when reply contact (email/phone) was fetched
     dre_number    TEXT,                    -- CA DRE license # parsed from the body (agents only)
     status        TEXT NOT NULL DEFAULT 'new',
     reject_reason TEXT,
@@ -104,7 +106,8 @@ CREATE TABLE IF NOT EXISTS blocklist (
 """
 
 # Columns added after the original schema shipped; ALTER them onto older DBs.
-_ADDED_COLUMNS = {"dre_number": "TEXT", "verification": "TEXT", "source_extra": "TEXT"}
+_ADDED_COLUMNS = {"dre_number": "TEXT", "verification": "TEXT", "source_extra": "TEXT",
+                  "reply_email": "TEXT", "contact_fetched_at": "TEXT"}
 
 
 def migrate(conn: sqlite3.Connection) -> None:

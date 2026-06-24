@@ -114,6 +114,7 @@ def build_rows(conn) -> list[dict]:
             "lng": primary.get("lng"),
             "image_urls": _json_list(primary.get("image_urls")),
             "phone": primary.get("phone"),
+            "reply_email": primary.get("reply_email"),
             "legit_score": primary.get("legit_score"),
             "legit_label": primary.get("legit_label"),
             "red_flags": _json_list(primary.get("red_flags")),

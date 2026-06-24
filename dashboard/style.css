@@ -480,6 +480,8 @@ main { padding: 10px clamp(18px, 4vw, 56px) 80px; }
   padding:1px 6px;white-space:nowrap}
 .prox.avoid{color:#b23222;border-color:#b23222;text-transform:uppercase;font-weight:700}
 .prox.caution{color:#9a6a1b;border-color:#c79a4e;text-transform:uppercase;font-weight:700}
+.relaytag{font-family:var(--mono,monospace);font-size:9.5px;letter-spacing:.04em;color:#3a7a4a;
+  border:1px solid #3a7a4a;border-radius:3px;padding:0 4px;margin-left:6px;text-transform:uppercase;vertical-align:middle}
 .card.offarea{opacity:.62}
 .card.offarea:hover{opacity:1}
 .card.offarea::after{content:"AVOID AREA";position:absolute;top:8px;left:8px;z-index:3;

@@ -457,14 +457,15 @@ function openModal(id) {
   ].sort((a, b) => (b.fit_score ?? -1) - (a.fit_score ?? -1));
   const nSites = new Set(sources.map((s) => s.source)).size;
   const emailMatch = (d.contact || "").match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
-  const email = emailMatch ? emailMatch[0] : null;
+  // prefer the relay email we fetched via the reply flow, else any email in the post
+  const email = d.reply_email || (emailMatch ? emailMatch[0] : null);
   const contactsHtml = `
     <div class="contacts">
       <h4>Contact</h4>
       ${d.phone ? `<div class="crow"><span class="cic">📞</span> <a href="tel:${esc(d.phone)}">${esc(d.phone)}</a></div>` : ""}
-      ${email ? `<div class="crow"><span class="cic">✉️</span> <a href="mailto:${esc(email)}">${esc(email)}</a></div>` : ""}
+      ${email ? `<div class="crow"><span class="cic">✉️</span> <a href="mailto:${esc(email)}">${esc(email)}</a>${d.reply_email ? ` <span class="relaytag">CL relay</span>` : ""}</div>` : ""}
       <div class="crow"><span class="cic">🔗</span> <a href="${d.url}" target="_blank" rel="noopener">Reply on Craigslist ↗</a></div>
-      ${(!d.phone && !email) ? `<div class="cnote">No direct phone/email in the post — use the Craigslist reply button (relay email).</div>` : ""}
+      ${(!d.phone && !email) ? `<div class="cnote">No direct phone/email yet — use the Craigslist reply button (relay email).</div>` : ""}
     </div>`;
   const sourcesHtml = sources.length > 1 ? `
     <div class="sources">

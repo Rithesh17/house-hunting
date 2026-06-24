@@ -429,6 +429,17 @@ NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
   (incl. flagged-scam rows at trust≥40). Dry-run by default; `--execute` to delete,
   then `sync_supabase.py` drops them from the cloud. Run after vetting each refresh.
 - `scripts/notify.py` — Telegram digest (thresholded; scams blocked).
+- `scripts/fetch_cl_contacts.py` — ON-DEMAND (not in the auto-refresh): reveal a
+  Craigslist listing's reply contact (relay email + phone) by driving the LOCAL
+  **chromerpc** browser with raw CDP + human-like Bézier mouse clicks (CL hides
+  contact behind the JS reply button). Coords come from the DOM bbox (buttons shift
+  with viewport; fixed pixels fail), the reply panel loads async (we poll), and it
+  enumerates the reply-option-headers (email/call/text) clicking each. Stores
+  `reply_email` + `phone` on the row. Prereq: `cd chromerpc && ./bin/chromerpc
+  -headless -addr :50051 &`. **ONE pass per listing** — CL throttles repeated reply
+  requests per IP (a batch of 20 got ~11; the rest throttle/expire and are retried
+  on a later run since unfetched rows are reselected). `--all-vetted` | `<ids>` |
+  `--force` | `--delay N`.
 - `scripts/sync_supabase.py` — publish the minimal cloud read-model to Supabase.
 - `scripts/serve.py` — local map dashboard of the LOCAL db (http://localhost:8000).
 - `scripts/db.py` — SQLite schema + CLI (`init`, `list`, `show`, `set-status`).
