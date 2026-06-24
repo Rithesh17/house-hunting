@@ -69,15 +69,29 @@ Craigslist,"* *"any new places today?"* — run the pipeline below end to end.
   `description=None` (pipeline still runs); some legit listings also simply have
   no body, which is fine.
 - **Zillow** (`scripts/fetch_zillow.py`) — Zillow hard-blocks scraping (PerimeterX),
-  so we go through the **Apify `maxcopell/zillow-scraper` actor** (it runs Zillow's
-  own search behind proxies). We query SF / for-rent / ≤max_price / newest, map each
-  listing to our schema, and insert `source='zillow'` rows (skipping multi-unit
-  "building cards"). Needs `APIFY_TOKEN` in `.env`; **bills per result** (~$0.002
-  each, ~2,500/mo free on the $5 plan), so each run is capped (`--max-items`,
-  default 40) and sorted newest-first to stay incremental + inside the free quota.
-  Zillow search returns ~1 photo + no body, so (like thin Zumper rows) share-vs-unit
-  is unconfirmed by photos — but Zillow units are agent/MLS-backed with real
-  addresses, so the research + cross-listing checks carry the weight.
+  so we go through the **Apify `igolaizola/zillow-scraper-ppe` actor** (it runs
+  Zillow's own rental search behind residential proxies). We query by location +
+  filters: `operation=rent`, `location="San Francisco, CA"`, `space=entirePlace`
+  (excludes room-shares at the query level), `maxPrice=<cap>` (verified MONTHLY, not
+  weekly), `sortBy=newest`, and map each listing to `source='zillow'` rows (skipping
+  null-price "building cards"). Needs `APIFY_TOKEN` in `.env`. **Pay-per-event**:
+  Actor Start $0.0005/run + Result $0.0009/listing (incl. photos) + Fetch Detail
+  $0.002/listing (only when `fetchDetails=true`; ~$0.0029 all-in). The cost lever is
+  how many listings return, so we DERIVE `timeOnZillow` (Zillow's "listed within the
+  last N" recency filter; buckets 1d/1w/2w/1m/3m/…) from how long ago we last pulled
+  (`last_pull_zillow`) and snap UP to the smallest covering bucket — a daily run asks
+  Zillow for just the last day. (Use `timeOnZillow`, NOT `minTimeOnZillow`, which is
+  the at-least-N-old filter.) Capped per run (`--max-items`, default 40) + a
+  `maxTotalChargeUsd` safety ceiling. The actor is location/filter-based (no per-id
+  detail fetch), so `fetchDetails` is all-or-nothing per run; with once-per-refresh
+  cadence the recency window ≈ the new listings, so we pay details essentially only
+  for genuinely-new units, and dedup + blocklist still ensure nothing seen is
+  re-stored/re-vetted. Unlike the old actor, this returns **many photos + the full
+  description** (`fetchDetails`), so share-vs-unit IS verifiable from the photos +
+  body — the SHARED-ROOM GATE applies to Zillow rows just like Craigslist. Each item
+  also carries `listingDateTimeOnZillow` (exact posted time) for `posted_at`.
+  `--no-details` skips bodies (cheaper). Replaced the old `maxcopell/zillow-scraper`
+  (1 photo, no body, $0.002/result).
 Both feed the SAME downstream (vetting, dedup, dashboard). `tools/dedup.py` merges
 the same unit ACROSS sources (by shared image id, address, OR rounded coords +
 price + room_type) into one tile; the dossier lists each source's link.
