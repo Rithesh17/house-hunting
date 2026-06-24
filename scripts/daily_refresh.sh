@@ -28,6 +28,20 @@ echo "===== $(date '+%F %T') daily refresh START =====" >> "$LOG"
 
 PROMPT="Run the full daily house-hunting refresh exactly per CLAUDE.md's Refresh section and THUMB_RULES.md, end to end: (1) python3 scripts/refresh.py (all sources including Zillow as the day's first run); (2) fill any market buckets it flags via WebSearch, then python3 scripts/market_comps.py set ..., and re-run python3 scripts/research.py --all-new; (3) vet EVERY new listing with parallel general-purpose subagents, each reading the post (python3 scripts/db.py show <id>), every photo in data/images/<id>/, and data/research/<id>.json under the two-stage rubric, writing verdicts to data/_verdicts_*.json; (4) python3 tools/apply_verdicts.py, then python3 tools/dedup.py, python3 tools/purge_db.py --execute, python3 scripts/sync_supabase.py, python3 scripts/notify.py --new, python3 tools/purge_images.py --all. Respect THUMB_RULES.md: Zillow once per day only, store only remote image URLs, stay on free tiers. If refresh reports 0 new, stop after sync. Finish with a short summary of standouts."
 
-claude -p "$PROMPT" --dangerously-skip-permissions >> "$LOG" 2>&1
-code=$?
+# `claude -p` is non-interactive: it runs to completion and exits on its own. The
+# watchdog is a safety net — if the headless run ever HANGS, hard-kill it (and its
+# process group) so no Claude instance is ever left lingering after this job.
+TIMEOUT=3600  # 1 hour hard cap
+claude -p "$PROMPT" --dangerously-skip-permissions >> "$LOG" 2>&1 &
+CLAUDE_PID=$!
+( sleep "$TIMEOUT"
+  if kill -0 "$CLAUDE_PID" 2>/dev/null; then
+    echo "$(date '+%F %T') WATCHDOG: run exceeded ${TIMEOUT}s — terminating" >> "$LOG"
+    kill -TERM "$CLAUDE_PID" 2>/dev/null; sleep 30; kill -KILL "$CLAUDE_PID" 2>/dev/null
+  fi ) &
+WATCHDOG_PID=$!
+wait "$CLAUDE_PID"; code=$?
+kill "$WATCHDOG_PID" 2>/dev/null  # claude finished first -> cancel the watchdog
+# belt-and-suspenders: reap any stray headless claude from THIS run if still alive
+kill -0 "$CLAUDE_PID" 2>/dev/null && kill -KILL "$CLAUDE_PID" 2>/dev/null
 echo "===== $(date '+%F %T') daily refresh END (exit $code) =====" >> "$LOG"
