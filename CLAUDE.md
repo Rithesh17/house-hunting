@@ -4,6 +4,11 @@ This project finds affordable SF rentals. **Claude Code is the engine:** the use
 opens a session and asks for listings; you orchestrate the Python scripts for the
 mechanical work and personally do the **vision vetting + fit ranking**.
 
+> **Read `THUMB_RULES.md` first** — standing cost/efficiency guardrails (don't abuse
+> paid APIs, store only what the dashboard needs, never opt into paid tiers). They
+> override convenience. Key one: **Zillow (paid Apify) runs at most ONCE per
+> calendar day**; Craigslist + Zumper (free) can run any time.
+
 ## The user's criteria (the bar every listing is measured against)
 - **Budget:** hard cap **$2,000/month**.
 - **Type:** **1 bed / 1 bath AND 2+ bedroom whole units (houses/flats) are BOTH
@@ -100,9 +105,14 @@ price + room_type) into one tile; the dossier lists each source's link.
 This is the full cycle. Run it end to end:
 1. `py scripts/refresh.py` — does the deterministic plumbing incrementally:
    **hydrate local DB from Supabase** + Craigslist pull + Zumper pull +
+   **Zillow pull (ONCE/DAY only — auto-skipped if `last_pull_zillow` is today;
+   `--force-zillow` to override, `--no-zillow` to skip)** +
    detail/photos/gates + prune dead links + dedupe + **Stage-2 research bundles**
    (`scripts/research.py --all-new` → `data/research/<id>.json`). It prints how
-   many NEW listings need vetting AND which market buckets need a web lookup. The
+   many NEW listings need vetting AND which market buckets need a web lookup.
+   **A durable 9am cron runs this full cycle daily** (all sources incl. Zillow —
+   the day's first run); ad-hoc refreshes later in the day do Craigslist + Zumper
+   only (Zillow already pulled). See THUMB_RULES.md. The
    hydrate step (`scripts/hydrate_from_supabase.py`) pulls the cloud read-model
    back into local SQLite so a fresh checkout resumes WITHOUT re-vetting everything
    or letting the final sync delete cloud rows that are merely missing locally
