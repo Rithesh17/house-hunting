@@ -126,6 +126,9 @@ def OPT_POS(name):
             ".find(function(e){return e.textContent.toLowerCase().indexOf('%s')>=0;});"
             "if(!t)return '';var r=t.getBoundingClientRect();"
             "return JSON.stringify({cx:Math.round(r.x+r.width/2),cy:Math.round(r.y+r.height/2)});})()") % name
+CONTACT_NAME = ("(function(){var e=document.querySelector('.reply-contact-name');if(!e)return '';"
+                "var t=e.textContent.replace(/\\s+/g,' ').trim();"
+                "var m=t.match(/contact name\\s*:\\s*(.+)/i);return m?m[1].trim():'';})()")
 MAILTO = "(function(){var a=document.querySelector('a[href^=\"mailto:\"]');return a?a.getAttribute('href'):'';})()"
 PHONE = ("(function(){var t=document.querySelector('a[href^=\"tel:\"]');if(t)return t.getAttribute('href');"
          "var p=document.querySelector('.reply-content,.reply-info,[class*=reply]');var s=p?p.innerText:'';"
@@ -162,7 +165,8 @@ def fetch_contact(url: str) -> dict:
         return {"ok": False, "note": "no reply options (captcha/throttled?)"}
     time.sleep(3)
     names = ev(OPTION_NAMES) or got
-    out = {"ok": True, "options": names, "email": None, "phone": None}
+    cname = ev(CONTACT_NAME)
+    out = {"ok": True, "options": names, "name": (cname or None), "email": None, "phone": None}
     for name in names:
         pos = ev(OPT_POS(name))
         if not isinstance(pos, dict):
@@ -216,11 +220,11 @@ def main() -> None:
             res = {"ok": False, "note": f"error: {e}"}
         if res.get("ok"):
             conn.execute(
-                "UPDATE listings SET reply_email=?, phone=COALESCE(?,phone), contact_fetched_at=? WHERE id=?",
-                (res.get("email"), res.get("phone"), db.now(), pid))
+                "UPDATE listings SET reply_email=?, phone=COALESCE(?,phone), contact_name=?, contact_fetched_at=? WHERE id=?",
+                (res.get("email"), res.get("phone"), res.get("name"), db.now(), pid))
             conn.commit()
             done += 1
-            print(f"    options={res.get('options')} email={res.get('email')} phone={res.get('phone')}")
+            print(f"    options={res.get('options')} name={res.get('name')} email={res.get('email')} phone={res.get('phone')}")
         else:
             print(f"    SKIP: {res.get('note')}")
         if i < len(targets) - 1:

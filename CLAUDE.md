@@ -358,9 +358,12 @@ tip (manual): before sending money/info, the killer test is whether they'll do a
 LIVE tour — paste their reply and re-check.**
 
 **Fit score (0–100):** 1BR/1BA **and a WHOLE 2+ bedroom unit (house/flat)** are
-BOTH top tier (big boost) — do NOT penalize a listing for having 2+ bedrooms;
-the extra space is wanted. Spacious studio (≥450 sqft) = second tier;
-small/cramped studio penalized; shared rooms/SROs rejected. A 2+ bed only earns
+BOTH top tier (**~82–95**) — do NOT penalize a listing for having 2+ bedrooms;
+the extra space is wanted. A decent **studio is a SOLID second tier (~65–80)** — we
+prefer 1BR/1BA, but **do NOT punish studios too hard**: a clean, self-contained
+studio (esp. ≥450 sqft) should land ~70+ so a high-trust one still clears the notify
+bar; only a genuinely **small/cramped/SRO-ish** studio drops below ~55. Shared
+rooms/SROs are rejected outright. A 2+ bed only earns
 top tier if it's the **whole unit** — a "room in a 3BR" is still a shared room
 (reject). **Do NOT weight the neighborhood in `fit_score`** — score the UNIT
 itself (type/size/condition/value); the deterministic area model owns area

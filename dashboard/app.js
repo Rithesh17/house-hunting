@@ -462,6 +462,7 @@ function openModal(id) {
   const contactsHtml = `
     <div class="contacts">
       <h4>Contact</h4>
+      ${d.contact_name ? `<div class="crow"><span class="cic">👤</span> ${esc(d.contact_name)}</div>` : ""}
       ${d.phone ? `<div class="crow"><span class="cic">📞</span> <a href="tel:${esc(d.phone)}">${esc(d.phone)}</a></div>` : ""}
       ${email ? `<div class="crow"><span class="cic">✉️</span> <a href="mailto:${esc(email)}">${esc(email)}</a>${d.reply_email ? ` <span class="relaytag">CL relay</span>` : ""}</div>` : ""}
       <div class="crow"><span class="cic">🔗</span> <a href="${d.url}" target="_blank" rel="noopener">Reply on Craigslist ↗</a></div>
