@@ -43,6 +43,12 @@ def addr_key(r):
         return None
     a = re.sub(r"\s+", " ", r["address"].lower()).strip()
     a = re.sub(r",?\s*(san francisco|ca|usa|\d{5}).*$", "", a).strip(" ,")
+    # Drop cross-street / unit qualifiers so the SAME unit matches across sources
+    # ("2111 grove st near cole" == "2111 grove st"; "... apt 5" / "... #310" == "...").
+    a = re.sub(r"\s+(near|at|@|by|off)\s+.+$", "", a).strip(" ,")
+    a = re.sub(r"[#,]?\s*\b(apt|apartment|unit|suite|ste|rm|room)\b\.?\s*\w*$", "", a).strip(" ,#")
+    a = re.sub(r"\s+#\s*\w+$", "", a).strip(" ,#")
+    a = re.sub(r"\s+", " ", a).strip()
     return f"{a}|{r['price']}|{r['room_type']}" if a else None
 
 

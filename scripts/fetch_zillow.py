@@ -38,6 +38,7 @@ import math
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -118,6 +119,25 @@ def _photos(item: dict) -> list[str]:
         if key not in best or rank > best[key][0]:
             best[key] = (rank, u)
     return [u for _, u in best.values()][:15]
+
+
+def reverse_geocode(sess, lat, lng) -> str | None:
+    """Neighbourhood/suburb name for coords via Nominatim reverse geocode — gives
+    Zillow rows a real area LABEL (the API has no neighbourhood field). None if no
+    coords (undisclosed listings) or on failure."""
+    if lat is None or lng is None:
+        return None
+    try:
+        r = sess.get("https://nominatim.openstreetmap.org/reverse",
+                     params={"lat": lat, "lon": lng, "format": "json",
+                             "addressdetails": 1, "zoom": 16},
+                     headers={"User-Agent": "sf-house-hunt/1.0 (personal project)"},
+                     timeout=20)
+        a = (r.json().get("address") or {})
+        return (a.get("neighbourhood") or a.get("suburb")
+                or a.get("quarter") or a.get("city_district"))
+    except (requests.exceptions.RequestException, ValueError, KeyError):
+        return None
 
 
 def _posted_at(item: dict) -> str | None:
@@ -231,11 +251,15 @@ def main() -> None:
         photos = _photos(it)
         title = street or "Zillow rental"
         extra = _source_extra(it, det)
+        # The API has no neighbourhood field, so derive an area LABEL from the coords
+        # (else every Zillow row shows "(unspecified SF)" despite having a location).
+        hood = reverse_geocode(sess, lat, lng) or ""
+        time.sleep(1.0)  # Nominatim courtesy rate limit
+        area_label = hood or cfg.get("unspecified_area_name", "(unspecified SF)")
 
         db.insert_stub(conn, post_id=pid, url=url, title=title, price=price,
-                       room_type=room_type,
-                       area=cfg.get("unspecified_area_name", "(unspecified SF)"),
-                       neighborhood="", posted_at=_posted_at(it))
+                       room_type=room_type, area=area_label,
+                       neighborhood=hood, posted_at=_posted_at(it))
         image_dir, image_count = fetch_detail.download_images(sess, pid, photos)
         db.update_detail(conn, pid, {
             "source": "zillow",
