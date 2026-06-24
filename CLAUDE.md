@@ -19,40 +19,47 @@ mechanical work and personally do the **vision vetting + fit ranking**.
   bedroom home/flat at or under the $2,000 cap is unusually cheap for SF, so it is
   exactly the bait scammers use — demand internally-consistent photos of the whole
   unit, normal on-platform terms, and a real address before trusting it.
-- **Areas — LEVEL FIELD except unsafe.** Every SF area is treated equally; there
-  is no favorite/preferred weighting. The ONLY area distinction is **unsafe**
-  (refined from 2023-25 crime data + local reporting + Reddit; SF crime hit a
-  23-year low in 2024, so the avoid set is deliberately tight): **AVOID**
-  Tenderloin + its edges (Lower Nob Hill / Tendernob, Polk Gulch — but NOT the Nob
-  Hill crest, which is safe), SoMa (esp. the 6th-St corridor), Civic Center/Mid-
-  Market, Union Square/Downtown, Financial District core, Chinatown, Bayview/
-  Hunters Point, and Visitacion Valley/Sunnydale. The broader **Mission** and
-  **Western Addition** are NOT blanket-avoided (crime down / block-by-block; only
-  the 16th-&-Mission plaza is a micro-hotspot). Everything calm/residential
-  (Richmond, the Sunset, Noe Valley, Pac Heights, Cole Valley, Glen Park, West
-  Portal, Hayes Valley, etc.) is good — none preferred over another; the user
-  likes parks nearby, young life, and streets safe to walk at night.
-- **Ranking = by MATCH score; unsafe areas sink to the bottom.** All non-unsafe
-  areas are a level field ranked by match (fit), then trust (legit). **Unsafe
-  ("avoid") areas** sink to the bottom (badged "unsafe area", excluded from
-  Featured + Telegram alerts). No favorites float; no proximity-to-work ordering.
+- **Areas — THREE tiers (`avoid` / `caution` / `ok`).** Prime residential SF is a
+  LEVEL field (no favorite among Richmond/Sunset/Noe/etc.); two distinctions sit on
+  top (refined from 2024-26 crime data + local reporting + Reddit; SF crime hit a
+  23-year low in 2024):
+  - **`avoid` (unsafe — sunk, badged, excluded from picks, DELETED by purge):**
+    Tenderloin, **Lower Nob Hill / Tendernob**, **Chinatown** (the one SF nhood
+    where violent crime ROSE in 2025, +39%), the SoMa-6th-St / Mid-Market / Union-
+    Square-Downtown core, Bayview/Hunters Point, and the **Sunnydale** projects.
+  - **`caution` (okay-but-not-prime — SURFACED + kept, but match-discounted ×0.7 and
+    ranked as a GROUP below every `ok` area):** **upper Polk** (lower Polk stays
+    avoid via the Tenderloin zone), **Financial District / Jackson Square** (low
+    resident violence — daytime property crime + dead-at-night), the **eastern SoMa
+    waterfront** (Rincon Hill / South Beach / East Cut), and **Visitacion Valley's
+    residential remainder** (only the Sunnydale complex is avoid).
+  - **`ok` (prime, level field):** everything calm/residential (Richmond, the
+    Sunset, Noe Valley, Pac Heights, Cole Valley, Glen Park, West Portal, Hayes
+    Valley, etc.). The broader **Mission** and **Western Addition** are NOT
+    blanket-avoided. The user wants safe-to-walk-at-night first; parks/young-life
+    are a bonus.
+- **Ranking = grouped by tier, then MATCH.** `ok` first (level field by match (fit)
+  then trust), then `caution` as a group below them, then `avoid` at the bottom
+  (badged, excluded from Featured + Telegram). No favorites float; no proximity
+  ordering.
 - **MATCH is area-aware; TRUST is not.** The subagent scores `fit_score` on the
-  UNIT alone; at publish time `geo.display_match()` folds area in, so an unsafe
-  area reads as a LOW match (≤30) even if the unit is nice — a good unit in a
-  bad-for-you area is a poor fit. **Trust (`legit_score`) is never penalized for
-  area** — it measures scam-risk only, so a real property-manager studio in the
-  Tenderloin is correctly high-trust + low-match (and excluded from picks anyway).
-- **Area model is deterministic** (`scripts/geo.py` + the `unsafe:` block in
-  `config.yaml`): each listing is classified into a **binary** tier —
-  `avoid` (unsafe) or `ok`. Classification uses the listing's ACTUAL location:
-  when the post gives a street address, `fetch_detail.py` geocodes it to PRECISE
-  coords + a neighbourhood name; otherwise the post's area text is used. A listing
-  is `avoid` if its neighbourhood NAME matches the unsafe list OR its coords fall
-  in an unsafe zone (a coordinate backstop). Subagents score `fit_score` on the
-  UNIT itself (type/size/condition/value) and do NOT weight the neighborhood — the
-  area model owns area. `area_tier` is computed at sync time and stored in Supabase.
+  UNIT alone; at publish time `geo.display_match()` folds area in — `avoid` reads as
+  a LOW match (×0.3, ≤30), `caution` as a discounted one (×0.7), `ok` full. So a
+  nice unit in a lesser-for-you area is a lesser fit. **Trust (`legit_score`) is
+  never penalized for area** — it measures scam-risk only (a real property-manager
+  studio in the Tenderloin is high-trust + low-match, excluded from picks anyway).
+- **Area model is deterministic** (`scripts/geo.py` + the `unsafe:` and `caution:`
+  blocks in `config.yaml`): each listing is classified `avoid` / `caution` / `ok`
+  from its ACTUAL location — when the post gives a street address, `fetch_detail.py`
+  geocodes it to PRECISE coords + a neighbourhood name; otherwise the post's area
+  text is used. A listing is `avoid` if its NAME matches the unsafe list OR its
+  coords fall in an unsafe zone; else `caution` if it matches the caution names/
+  zones; else `ok`. **AVOID always wins over caution** (lower Polk is in the
+  Tenderloin zone → avoid even though "Polk Gulch" is a caution name). Subagents
+  score `fit_score` on the UNIT only — the area model owns area. `area_tier` is
+  computed at sync time and stored in Supabase.
 - Searches are configured in `config.yaml` (areas, room-type passes, price cap,
-  notify thresholds, and the `unsafe:` area model).
+  notify thresholds, and the `unsafe:` + `caution:` area model).
 
 ## Trigger
 When the user says anything like *"fetch the latest listings,"* *"check

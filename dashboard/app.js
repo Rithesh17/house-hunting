@@ -53,11 +53,14 @@ const TRUST = {
 };
 function trust(d) { return TRUST[d.legit_label] || { cls: "t-amateur", label: "Unrated" }; }
 
-/* Area model (flat): every area is a level field ranked by match; only the
- * unsafe ("avoid") tier is sunk to the bottom. No favorite/preferred weighting. */
+/* Area model (3 tiers): prime ('ok') areas are a level field ranked by match;
+ * 'caution' areas (okay-but-not-prime) are surfaced but match-discounted and rank
+ * as a GROUP below all prime areas; 'avoid' (unsafe) sinks to the very bottom.
+ * No favorite/preferred weighting WITHIN the prime tier. */
 const isAvoid = (d) => d.area_tier === "avoid";
-/* Group rank for ordering: 0 = normal, 1 = unsafe (bottom). */
-const areaRank = (d) => (isAvoid(d) ? 1 : 0);
+const isCaution = (d) => d.area_tier === "caution";
+/* Group rank for ordering: 0 = prime, 1 = caution, 2 = unsafe (bottom). */
+const areaRank = (d) => (isAvoid(d) ? 2 : isCaution(d) ? 1 : 0);
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -173,7 +176,7 @@ function selection() {
     out = out.map((d) => ({ d, n: hits(d) })).filter((x) => x.n > 0);  // drop rows matching no term
     const full = (x) => (x.n === toks.length ? 0 : 1);                 // 0 = all terms, 1 = fuzzy/some
     const rel = (x) => textRelevance(x.d, toks);
-    const aRank = (x) => (isAvoid(x.d) ? 1 : 0);                       // unsafe areas still sink
+    const aRank = (x) => areaRank(x.d);                               // caution below prime, avoid at bottom
     return out
       .sort((a, b) => aRank(a) - aRank(b) || full(a) - full(b) || rel(b) - rel(a))
       .map((x) => x.d);
@@ -276,7 +279,8 @@ function renderList(items) {
       <div class="body">
         <h3 class="title">${esc(d.title || "Untitled entry")}</h3>
         <div class="hood"><span class="pin">◈</span> ${esc(d.area || d.neighborhood || "San Francisco")}
-          ${isAvoid(d) ? `<span class="prox avoid">unsafe area</span>` : ""}
+          ${isAvoid(d) ? `<span class="prox avoid">unsafe area</span>`
+            : isCaution(d) ? `<span class="prox caution">secondary area</span>` : ""}
           <span class="srctag">${sourceLabel(d.source)}${d.dup_count > 1 ? " +" + (d.dup_count - 1) : ""}</span></div>
         <div class="specs">
           <span class="chip kind">${esc(t.kind)}</span>
@@ -349,7 +353,7 @@ function setView(view) {
 function featuredItems() {
   return LISTINGS
     .filter((d) => d.status !== "rejected" && d.status !== "removed" &&
-      d.legit_label !== "likely-scam" && !isAvoid(d) &&
+      d.legit_label !== "likely-scam" && !isAvoid(d) && !isCaution(d) &&
       (d.fit_score ?? 0) >= 70 && (d.legit_score ?? 0) >= 70)
     .sort((a, b) =>
       ((b.fit_score + b.legit_score) - (a.fit_score + a.legit_score)) ||  // best match+trust

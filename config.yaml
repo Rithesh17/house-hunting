@@ -71,10 +71,7 @@ unsafe:
   names:
     - tenderloin
     - tendernob           # Tenderloin-adjacent SE edge of Nob Hill (NOT the hill proper)
-    - lower nob hill      # ditto — Nob Hill crest itself is safe, so no blanket "nob hill"
-    - polk gulch          # Polk west of Leavenworth is rough at night
-    - soma                # west SoMa / 6th St corridor is the worst pocket
-    - south of market
+    - lower nob hill      # kept avoid (user call) — Nob Hill crest itself is safe
     - mid-market
     - mid market
     - civic center
@@ -82,14 +79,15 @@ unsafe:
     - un plaza
     - union square        # dead at night + high property crime, not a peaceful/parks fit
     - downtown
-    - financial district
-    - fidi
-    - chinatown           # dense/touristy + rough NE edge by Broadway; not peaceful/young-life
+    - chinatown           # kept avoid (user call) — only SF nhood where violent crime ROSE in 2025 (+39%)
     - bayview
     - hunters point
     - hunter's point
-    - visitacion valley
     - sunnydale           # public-housing complex in Visitacion Valley, historically high crime
+  # Moved to the `caution:` tier (surfaced-but-discounted, NOT avoided) per 2024-26
+  # research: polk gulch (upper Polk is fine), financial district / fidi (low resident
+  # violence), soma / south of market (eastern waterfront is residential), visitacion
+  # valley (only the Sunnydale complex is dangerous).
   # Deliberately NOT flagged (sources say the blanket label is unfair): the
   # broader MISSION (recorded crime down in 2025; west-of-Valencia is prime
   # young-life — only the 16th & Mission BART plaza is a micro-hotspot, too small
@@ -101,14 +99,38 @@ unsafe:
   # north over Lower Nob Hill / Tendernob, so there is no separate Nob Hill zone —
   # the safe hill crest stays 'ok'.)
   zones:
-    - { name: "Tenderloin",                 lat: 37.7836, lng: -122.4135, radius_km: 0.85 }
+    - { name: "Tenderloin",                 lat: 37.7836, lng: -122.4135, radius_km: 0.85 }  # reaches over lower Polk + lower Tendernob
     - { name: "Civic Center / Mid-Market",  lat: 37.7793, lng: -122.4172, radius_km: 0.70 }
-    - { name: "SoMa",                       lat: 37.7785, lng: -122.4050, radius_km: 1.00 }
+    - { name: "SoMa 6th-St / West core",    lat: 37.7800, lng: -122.4085, radius_km: 0.60 }  # tightened: frees the eastern waterfront
     - { name: "Union Square / Downtown",    lat: 37.7880, lng: -122.4070, radius_km: 0.45 }
-    - { name: "Financial District core",    lat: 37.7950, lng: -122.4010, radius_km: 0.55 }
     - { name: "Chinatown",                  lat: 37.7941, lng: -122.4078, radius_km: 0.35 }
     - { name: "Bayview / Hunters Point",    lat: 37.7299, lng: -122.3890, radius_km: 1.80 }
-    - { name: "Visitacion Valley / Sunnydale", lat: 37.7155, lng: -122.4050, radius_km: 1.20 }
+    - { name: "Sunnydale",                  lat: 37.7120, lng: -122.4118, radius_km: 0.60 }  # tightened: only the projects, not all of Vis Valley
+  # (Financial District core zone removed — FiDi is now `caution`, not avoid.)
+
+# Second-tier ("okay, but not prime") areas — formerly avoided, but 2024-26 research
+# (SFPD/DataSF, Mission Local / SF Standard, r/AskSF) shows they're safe-enough to
+# SURFACE, just not as good as prime residential SF. They are KEPT + shown, but their
+# MATCH is discounted (geo.MATCH_FACTOR['caution']=0.7) and they rank as a GROUP below
+# every 'ok' area. AVOID always wins over caution (e.g. lower Polk falls in the
+# Tenderloin zone -> avoid; only upper Polk reads caution). Same name+zone mechanics
+# as `unsafe:` above.
+caution:
+  names:
+    - polk gulch          # upper Polk (Russian Hill side); lower Polk -> Tenderloin zone = avoid
+    - financial district  # daytime property crime, low RESIDENT violence; just dead at night
+    - fidi
+    - jackson square      # quiet, low-disorder north FiDi
+    - south of market     # generic SoMa: surfaced-but-discounted; the 6th-St core zone stays avoid
+    - soma
+    - rincon hill         # eastern SoMa waterfront — residential high-rises, safe-ish
+    - south beach
+    - east cut
+    - visitacion valley   # residential remainder; the Sunnydale complex zone stays avoid
+  zones:
+    - { name: "Financial District / Jackson Sq", lat: 37.7950, lng: -122.4010, radius_km: 0.50 }
+    - { name: "Eastern SoMa waterfront",         lat: 37.7855, lng: -122.3925, radius_km: 0.75 }
+    - { name: "Visitacion Valley (residential)", lat: 37.7135, lng: -122.4040, radius_km: 0.55 }
 
 # PULL PHILOSOPHY: pull broadly (almost all of SF, price-capped, no office/parking),
 # then let SUBAGENTS manually read each post and filter rooms / tag scams / judge
