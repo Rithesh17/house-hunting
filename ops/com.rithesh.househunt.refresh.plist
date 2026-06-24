@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily 9am full house-hunting refresh (headless Claude Code).
+  Source-of-truth copy; installed to ~/Library/LaunchAgents/ and loaded with:
+    cp ops/com.rithesh.househunt.refresh.plist ~/Library/LaunchAgents/
+    launchctl bootout  gui/$(id -u)/com.rithesh.househunt.refresh 2>/dev/null
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rithesh.househunt.refresh.plist
+  Inspect:  launchctl print gui/$(id -u)/com.rithesh.househunt.refresh
+  Run now:  launchctl kickstart -k gui/$(id -u)/com.rithesh.househunt.refresh
+  Remove:   launchctl bootout gui/$(id -u)/com.rithesh.househunt.refresh && rm ~/Library/LaunchAgents/com.rithesh.househunt.refresh.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.rithesh.househunt.refresh</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Volumes/wd_office_3/Personal/house-hunting/scripts/daily_refresh.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/rithesh/Library/Logs/house-hunting-refresh.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/rithesh/Library/Logs/house-hunting-refresh.err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
