@@ -23,37 +23,57 @@ import fetch_detail  # for download_images
 import fetch_listings  # for assign_area
 
 API = "https://www.zumper.com/api/svc/inventory/v1/listables/maplist/pins"
-# SF bounding box
-SF_BOX = {"maxLat": 37.835, "minLat": 37.700, "maxLng": -122.355, "minLng": -122.520}
-PAGE = "https://www.zumper.com/apartments-for-rent/san-francisco-ca"
+
+# Search regions. Same downstream as Craigslist's sfc + eby passes: SF citywide,
+# plus Berkeley city (East Bay BART-commute option). The Berkeley box is bounded
+# south at the Oakland city line (~37.846, geo._OAKLAND_LINE_LAT) so we don't pull
+# Oakland; geo.classify() still owns the final near-BART/avoid decision per coord.
+REGIONS = {
+    "sf": {
+        "box": {"maxLat": 37.835, "minLat": 37.700, "maxLng": -122.355, "minLng": -122.520},
+        "url": "san-francisco-ca",
+        "page": "https://www.zumper.com/apartments-for-rent/san-francisco-ca",
+        "meta_key": "last_pull_zumper",
+        "label": "San Francisco",
+    },
+    "berkeley": {
+        "box": {"maxLat": 37.906, "minLat": 37.846, "maxLng": -122.234, "minLng": -122.325},
+        "url": "berkeley-ca",
+        "page": "https://www.zumper.com/apartments-for-rent/berkeley-ca",
+        "meta_key": "last_pull_zumper_berkeley",
+        "label": "Berkeley (East Bay)",
+    },
+}
+# Back-compat alias used elsewhere.
+SF_BOX = REGIONS["sf"]["box"]
 
 
-def zsession() -> requests.Session:
+def zsession(page: str = REGIONS["sf"]["page"]) -> requests.Session:
     s = requests.Session()
     s.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         "Content-Type": "application/json", "Accept": "application/json",
-        "Origin": "https://www.zumper.com", "Referer": PAGE,
+        "Origin": "https://www.zumper.com", "Referer": page,
         "X-Requested-With": "XMLHttpRequest",
     })
-    s.get(PAGE, timeout=30)  # bootstrap cookies
+    s.get(page, timeout=30)  # bootstrap cookies
     return s
 
 
-def fetch_box(s, box, limit=100):
+def fetch_box(s, box, limit=100, url="san-francisco-ca"):
     body = {"limit": limit, "box": box, "propertyTypes": {"exclude": [16, 17]},
-            "external": True, "url": "san-francisco-ca"}
+            "external": True, "url": url}
     r = s.post(API, data=json.dumps(body), timeout=30)
     r.raise_for_status()
     j = r.json()
     return j.get("pins", []), j.get("matching", 0)
 
 
-def collect(s, box, limit, depth, out, seen):
+def collect(s, box, limit, depth, out, seen, url="san-francisco-ca"):
     """Recursively pull all pins in box, subdividing when capped."""
     try:
-        pins, matching = fetch_box(s, box, limit)
+        pins, matching = fetch_box(s, box, limit, url)
     except requests.exceptions.RequestException as e:
         print(f"  ! box failed: {e}", file=sys.stderr)
         return
@@ -67,7 +87,7 @@ def collect(s, box, limit, depth, out, seen):
             {"maxLat": midlat, "minLat": box["minLat"], "maxLng": box["maxLng"], "minLng": midlng},
         ]
         for q in quads:
-            collect(s, q, limit, depth + 1, out, seen)
+            collect(s, q, limit, depth + 1, out, seen, url)
     else:
         for p in pins:
             if p["listing_id"] not in seen:
@@ -304,22 +324,17 @@ class DescriptionFetcher:
             pass
 
 
-def main() -> None:
-    cfg = common.load_config()
+def pull_region(conn, cfg, region_key, sess, descf, use_cr) -> int:
+    """Pull one region's pins (SF or Berkeley) and insert new ones. Returns count."""
+    reg = REGIONS[region_key]
     max_price = cfg["max_price"]
-    conn = db.connect()
-    s = zsession()
+    s = zsession(reg["page"])
 
-    print("[zumper] pulling SF pins (recursive box subdivision)...")
+    print(f"[zumper] pulling {reg['label']} pins (recursive box subdivision)...")
     pins: list = []
-    collect(s, SF_BOX, 100, 0, pins, set())
-    print(f"  {len(pins)} unique pins in SF")
+    collect(s, reg["box"], 100, 0, pins, set(), reg["url"])
+    print(f"  {len(pins)} unique pins in {reg['label']}")
 
-    sess = common.session(cfg)  # for image downloads
-    descf = DescriptionFetcher()  # fallback (Playwright; usually a no-op here)
-    use_cr = _chromerpc_ready()
-    print("  [zumper] detail via " + ("chromerpc full-page render (description + contact)"
-          if use_cr else "Playwright fallback (likely description=None)"))
     new = 0
     for p in pins:
         price = p.get("min_price")
@@ -377,11 +392,37 @@ def main() -> None:
         conn.commit()
         new += 1
 
-    descf.close()
-    db.set_meta(conn, "last_pull_zumper", db.now())
+    db.set_meta(conn, reg["meta_key"], db.now())
     conn.commit()
+    print(f"  {new} new Zumper listings <= ${max_price} in {reg['label']} "
+          f"(status='new', ready to vet).")
+    return new
+
+
+def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser(description="Pull Zumper rentals into the DB.")
+    ap.add_argument("--region", default="both", choices=["sf", "berkeley", "both"],
+                    help="'sf' (default citywide SF), 'berkeley' (East Bay near-BART), "
+                         "or 'both'")
+    args = ap.parse_args()
+    regions = ["sf", "berkeley"] if args.region == "both" else [args.region]
+
+    cfg = common.load_config()
+    conn = db.connect()
+    sess = common.session(cfg)         # for image downloads
+    descf = DescriptionFetcher()       # fallback (Playwright; usually a no-op here)
+    use_cr = _chromerpc_ready()
+    print("[zumper] detail via " + ("chromerpc full-page render (description + contact)"
+          if use_cr else "Playwright fallback (likely description=None)"))
+
+    total = 0
+    for rk in regions:
+        total += pull_region(conn, cfg, rk, sess, descf, use_cr)
+
+    descf.close()
     conn.close()
-    print(f"\n{new} new Zumper listings <= ${max_price} added (status='new', ready to vet).")
+    print(f"\n{total} new Zumper listings added across {', '.join(regions)}.")
 
 
 if __name__ == "__main__":
