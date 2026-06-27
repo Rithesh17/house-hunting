@@ -15,6 +15,12 @@ from __future__ import annotations
 SF_LAT = (37.695, 37.840)
 SF_LNG = (-122.530, -122.340)
 
+# Berkeley search box (East Bay BART-commute option). Coords inside this are KEPT
+# through the objective gate; the precise safe-near-BART vs avoid call is made by
+# geo.classify (Oakland / South Berkeley get classified `avoid` and purged later).
+BERKELEY_LAT = (37.845, 37.905)
+BERKELEY_LNG = (-122.300, -122.230)
+
 # Other Bay Area / NorCal cities that disqualify a post at discovery time. NOTE:
 # deliberately NOT including bare "richmond" (Inner/Outer Richmond are SF).
 OUT_OF_SF_CITIES = [
@@ -37,6 +43,9 @@ def objective_reject_reason(*, image_count, lat, lng) -> str | None:
     if not image_count:
         return "no photos"
     if lat is not None and lng is not None:
-        if not (SF_LAT[0] <= lat <= SF_LAT[1] and SF_LNG[0] <= lng <= SF_LNG[1]):
-            return f"outside San Francisco (coords {lat:.3f},{lng:.3f})"
+        in_sf = (SF_LAT[0] <= lat <= SF_LAT[1] and SF_LNG[0] <= lng <= SF_LNG[1])
+        in_berk = (BERKELEY_LAT[0] <= lat <= BERKELEY_LAT[1]
+                   and BERKELEY_LNG[0] <= lng <= BERKELEY_LNG[1])
+        if not (in_sf or in_berk):
+            return f"outside target area (coords {lat:.3f},{lng:.3f})"
     return None

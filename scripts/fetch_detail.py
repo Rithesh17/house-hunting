@@ -48,6 +48,11 @@ def parse_post(html: str) -> dict:
         if m:
             data["price"] = int(m.group(1).replace(",", ""))
 
+    # Posting date — <time class="date timeago" datetime="2026-06-25T09:46:55-0700">
+    time_el = soup.select_one("time.date[datetime], time[datetime]")
+    if time_el and time_el.get("datetime"):
+        data["posted_at"] = time_el["datetime"]
+
     # Description body (strip the QR/print preamble)
     body = soup.select_one("#postingbody")
     if body:
@@ -55,25 +60,14 @@ def parse_post(html: str) -> dict:
             junk.decompose()
         data["description"] = body.get_text("\n", strip=True)
 
-    # Attributes: beds / baths / sqft / housing type
+    # RAW attribute text only — NO derivation. We do NOT interpret beds/baths/sqft/
+    # housing-type/room-type here; the vetting subagent reads this raw string (plus
+    # the description + photos) and AUTHORS those fields in its enrich block. See
+    # CLAUDE.md: display fields are LLM-authored, never auto-mapped by the scraper.
     attr_text = " ".join(s.get_text(" ", strip=True)
-                         for s in soup.select(".attrgroup")).lower()
-    bed = re.search(r"(\d+(?:\.\d+)?)\s*br", attr_text)
-    bath = re.search(r"(\d+(?:\.\d+)?)\s*ba", attr_text)
-    sqft = re.search(r"(\d{2,5})\s*ft2", attr_text)
-    if bed:
-        data["bedrooms"] = float(bed.group(1))
-    elif "studio" in attr_text:
-        data["bedrooms"] = 0.0
-    if bath:
-        data["bathrooms"] = float(bath.group(1))
-    if sqft:
-        data["sqft"] = int(sqft.group(1))
-    for ht in ("apartment", "house", "condo", "cottage/cabin", "in-law",
-               "duplex", "flat", "loft", "townhouse"):
-        if ht in attr_text:
-            data["housing_type"] = ht
-            break
+                         for s in soup.select(".attrgroup")).strip()
+    if attr_text:
+        data["_raw_attrs"] = attr_text
 
     # Map coordinates (from the post's map widget)
     map_el = soup.select_one("#map")
@@ -149,11 +143,17 @@ def download_images(sess: requests.Session, post_id: str,
 # Rough San Francisco bounding box — used to reject a bad geocode (e.g. a
 # city-centroid fallback) before it overwrites a listing's coords.
 _SF_BOUNDS = (37.70, 37.84, -122.52, -122.35)  # (lat_min, lat_max, lng_min, lng_max)
+_BERK_BOUNDS = (37.845, 37.905, -122.300, -122.230)  # East Bay / Berkeley search box
+
+
+def _in_box(lat, lng, b) -> bool:
+    return b[0] <= lat <= b[1] and b[2] <= lng <= b[3]
 
 
 def _in_sf(lat, lng) -> bool:
-    return (_SF_BOUNDS[0] <= lat <= _SF_BOUNDS[1]
-            and _SF_BOUNDS[2] <= lng <= _SF_BOUNDS[3])
+    """Accept a geocode that lands in a target region (SF or the Berkeley box) so a
+    good address-geocode replaces the loose map pin; reject a stray city-centroid."""
+    return _in_box(lat, lng, _SF_BOUNDS) or _in_box(lat, lng, _BERK_BOUNDS)
 
 
 def geocode(sess: requests.Session, address: str):
@@ -205,10 +205,11 @@ def fetch_one(conn, cfg: dict, post_id: str) -> None:
     image_urls = data.pop("_image_urls", [])
     image_dir, image_count = download_images(sess, post_id, image_urls)
 
-    # Derive room type from the parsed bedroom count.
-    b = data.get("bedrooms")
-    if b is not None:
-        data["room_type"] = "studio" if b == 0 else "1br" if b == 1 else "2br_plus"
+    # NO room_type / beds / baths derivation — the subagent authors those (enrich).
+    # Stash the raw attribute string into source_extra.raw for it to read.
+    raw_attrs = data.pop("_raw_attrs", None)
+    if raw_attrs:
+        data["source_extra"] = json.dumps({"raw": {"raw_attrs": raw_attrs}})
 
     # Determine the area from the ACTUAL location: when the post gives a street
     # address, geocode it for a PRECISE location + neighbourhood name (more

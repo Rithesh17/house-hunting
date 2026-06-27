@@ -20,7 +20,9 @@ from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
-DB_PATH = os.path.join(DATA_DIR, "listings.db")
+# Default to the production DB; HOUSEHUNT_DB lets a one-off audit run against a
+# separate fresh DB (empty blocklist) without touching production or the cloud.
+DB_PATH = os.environ.get("HOUSEHUNT_DB") or os.path.join(DATA_DIR, "listings.db")
 # Transient Stage-2 research bundles (one JSON per listing), like data/images/.
 RESEARCH_DIR = os.path.join(DATA_DIR, "research")
 
@@ -52,6 +54,7 @@ CREATE TABLE IF NOT EXISTS listings (
     phone         TEXT,
     reply_email   TEXT,                    -- CL relay email revealed via the reply flow (chromerpc)
     contact_name  TEXT,                    -- poster's contact name from the reply panel, if shown
+    contact_details TEXT,                  -- full revealed call/text instructions verbatim (masked relay # + extension/code; varies)
     contact_fetched_at TEXT,              -- when reply contact (email/phone) was fetched
     dre_number    TEXT,                    -- CA DRE license # parsed from the body (agents only)
     status        TEXT NOT NULL DEFAULT 'new',
@@ -108,7 +111,8 @@ CREATE TABLE IF NOT EXISTS blocklist (
 
 # Columns added after the original schema shipped; ALTER them onto older DBs.
 _ADDED_COLUMNS = {"dre_number": "TEXT", "verification": "TEXT", "source_extra": "TEXT",
-                  "reply_email": "TEXT", "contact_fetched_at": "TEXT", "contact_name": "TEXT"}
+                  "reply_email": "TEXT", "contact_fetched_at": "TEXT", "contact_name": "TEXT",
+                  "contact_details": "TEXT"}
 
 
 def migrate(conn: sqlite3.Connection) -> None:

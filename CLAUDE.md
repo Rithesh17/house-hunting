@@ -8,6 +8,11 @@ mechanical work and personally do the **vision vetting + fit ranking**.
 > paid APIs, store only what the dashboard needs, never opt into paid tiers). They
 > override convenience. Key one: **Zillow (paid Apify) runs at most ONCE per
 > calendar day**; Craigslist + Zumper (free) can run any time.
+>
+> **`OUTREACH.md`** covers the email outreach pipeline layered on top of the refresh
+> (Stage 0 read+vet replies → Stage 1 vet+enrich listings → Stage 2 contact+send),
+> the `new → vetted → contacted → interested` status model, and the single combined
+> Telegram digest. The refresh cron runs it when enabled.
 
 ## The user's criteria (the bar every listing is measured against)
 - **Budget:** hard cap **$2,000/month**.
@@ -19,6 +24,26 @@ mechanical work and personally do the **vision vetting + fit ranking**.
   bedroom home/flat at or under the $2,000 cap is unusually cheap for SF, so it is
   exactly the bait scammers use — demand internally-consistent photos of the whole
   unit, normal on-platform terms, and a real address before trusting it.
+- **Two hard requirements for ANY pick (added — not just a preference):**
+  1. **LONG-TERM only.** Reject short-term / summer / date-bounded sublets ("July to
+     mid-August", "Jul 1–Oct 30", "2-month min", "/week", "nightly", "vacation
+     rental"). A standard 12-month-ish lease only; a move-in *date* (e.g. "available
+     July 1") is fine, a fixed *end* date is not.
+  2. **FULL private bathroom, and a real private kitchen — with ONE kitchenette
+     exception.** Reject any **shared / common bathroom or kitchen** outright. A
+     **kitchenette / "light cooking area" / no-oven / no-stove / hot-plate / wet-bar**
+     is normally a reject too — **EXCEPT** when ALL of these hold: the unit is a
+     **whole 1 bed / 1 bath** (not a studio, not 2+ bed), it is **genuinely spacious /
+     large (not small or cramped)**, and the kitchenette is the **SOLE** caveat. In
+     that one case it MAY be KEPT and surfaced for a **manual** look (contact by hand,
+     not the clean auto-send profile). For a **studio, or ANY small / cramped unit, a
+     kitchenette is a HARD reject — no exception.** Always record the kitchen type
+     (full kitchen vs kitchenette/no-oven) in `verdict_summary`.
+- **AUTO-SEND is 1BR/1BA ONLY.** The cron auto-emails ONLY `room_type=='1br'` (real
+  1 bed / 1 bath) units. **Studios and 2+ bed are still surfaced on the dashboard at
+  full score (scores are NOT penalized) but are NEVER auto-emailed** — contact those
+  manually. Enforced in code: `send_email.py --auto` refuses any non-`1br` listing
+  (a hard guard beside the `OUTREACH_AUTOSEND` gate); a manual send omits `--auto`.
 - **Areas — THREE tiers (`avoid` / `caution` / `ok`).** Prime residential SF is a
   LEVEL field (no favorite among Richmond/Sunset/Noe/etc.); two distinctions sit on
   top (refined from 2024-26 crime data + local reporting + Reddit; SF crime hit a
@@ -67,19 +92,30 @@ Craigslist,"* *"any new places today?"* — run the pipeline below end to end.
 
 ## Sources
 - **Craigslist** (`scripts/fetch_listings.py` + `fetch_detail.py`) — the backbone.
+  NOTE (2026): CL changed search-result URLs to `www.craigslist.org/view/d/<slug>/
+  <alphanumeric-id>` (no `/apa/` category code, no `.html`). `common.post_id_from_url`
+  handles both formats; losing the category code means the old `roo` URL gate is gone,
+  so `fetch_listings.looks_like_room()` drops obvious rooms by TITLE (word-boundary
+  phrases; "1 bedroom"/"sunroom" never match) to stop the room flood — the subagent
+  shared-room gate is still the backstop. `fetch_detail` reads the new page's
+  `<time datetime>` for `posted_at`.
 - **Zumper** (`scripts/fetch_zumper.py`) — pulls SF via its internal map API
   (POST `/api/svc/inventory/v1/listables/maplist/pins`, recursive box subdivide),
   filters to ≤ max_price, inserts `source='zumper'` rows ready to vet. Zumper
   image URLs MUST be `https://img.zumpercdn.com/<id>/1280x960?dpr=1&fit=crop&h=542&q=76&w=991`
   (bare sizes 404); embed with `referrerpolicy="no-referrer"`. The map API has NO
-  description, and detail pages are behind a JS bot-challenge, so the script
-  loads each new listing in **headless Chromium (Playwright)** and extracts the
-  body from the page's `application/ld+json` (`DescriptionFetcher`). This is
-  essential: Zumper tags room-shares as "1 bedroom", so without the body a
-  private-room-in-a-shared-unit is indistinguishable from a real 1BR (see the
-  SHARED-ROOM GATE). If Playwright/Chromium is missing the fetch degrades to
-  `description=None` (pipeline still runs); some legit listings also simply have
-  no body, which is fine.
+  description, and detail pages render client-side + lazy-load on scroll, so for
+  each new listing the script drives **chromerpc** (`chromerpc_zumper_detail`):
+  navigate → scroll-load every section → read the **ABOUT body** + posted age +
+  best-effort **contact** (name/routed phone/extension, scanned anywhere on the
+  page since Zumper places it inconsistently). This is essential: Zumper tags
+  room-shares as "1 bedroom", so without the body a private-room-in-a-shared-unit
+  is indistinguishable from a real 1BR — photos-only vetting WILL false-positive
+  them (see the SHARED-ROOM GATE). The body also yields a posted date, so Zumper
+  rows become recency-scopable. Prereq: chromerpc on :50051 (the refresh cron
+  starts it). If chromerpc is down it falls back to the old Playwright path
+  (`DescriptionFetcher`, usually a no-op here) → `description=None`; pipeline
+  still runs but room-shares can't be caught from the body that run.
 - **Zillow** (`scripts/fetch_zillow.py`) — Zillow hard-blocks scraping (PerimeterX),
   so we go through the **Apify `igolaizola/zillow-scraper-ppe` actor** (it runs
   Zillow's own rental search behind residential proxies). We query by location +
@@ -148,6 +184,13 @@ This is the full cycle. Run it end to end:
 4b. `py tools/purge_db.py --execute` — DELETE rejected/removed + low-trust(<40) +
    unsafe-area rows (blocklisted so they don't re-surface), keeping ok-area trust≥40.
    Keeps the DB + dashboard to only what's worth seeing.
+4c. **Stage-1 contact-fetch (ALL kept CL, not just the ones we email).**
+   `py scripts/fetch_cl_contacts.py --all-vetted` — once vetting has settled the good
+   listings, grab the reply relay (+ any phone) for EVERY surviving `vetted`
+   Craigslist row so the dashboard carries contact info for all of them. Needs
+   chromerpc on :50051; CL throttles repeated reply requests, so a big batch may only
+   resolve some — the unfetched rows are reselected on a later run. (Stage 2 then just
+   DECIDES which of these already-contactable picks to email — it does NOT fetch.)
 5. `py scripts/sync_supabase.py` — **publish to the cloud** so the public
    dashboard updates (re-run after vetting/purge so new scores/dedup land + purged
    rows drop). `refresh.py` already runs this once at the end; run it again here.
@@ -401,6 +444,10 @@ do not penalize.
     "owner":     {"outcome": "ok",         "note": "real 3-unit residential parcel"},
     "price":     {"outcome": "plausible",  "note": "$1,950 vs ~$2,900 median (ratio 0.67)"},
     "duplicates":{"outcome": "ok",         "note": "no flood; single post"}
+  },
+  "enrich": {
+    "address": "333 9th Ave, San Francisco, CA", "price": 1950,
+    "room_type": "1br", "sqft": 600, "neighborhood": "Inner Richmond"
   }
 }
 ```
@@ -408,6 +455,28 @@ do not penalize.
 `{outcome, note}` where outcome ∈ verified/match/ok/plausible · neutral/unverified
 · flag/mismatch/scam/flood/implausible). It is stored, synced, and shown on the
 dashboard. Absent verification is fine — it just leaves trust unchanged.
+`enrich` is the **MANDATORY detail entry — the ONLY source of every display field.**
+The scrapers DO NOT auto-map fields anymore (that brittle logic was removed — it
+mislabeled real units, e.g. Zillow "Apartment for rent"). They fetch ONLY raw data
+(the verbatim description / page text / API blob in `source_signals.raw`, the photos,
+and coords for the area model). **You — having read the description, every photo, and
+the research bundle — are the authority on the listing's real details, so you MUST
+author EVERY display field here for EVERY listing (all sources: CL, Zumper, Zillow).**
+Read the raw values (CL `source_signals.raw.raw_attrs`, the description, the body; or
+Zillow `source_signals.raw.building_address`/`unit_address`/`bedrooms`/`bathrooms`/
+`living_area_sqft`/`home_type`/`api_monthly_price`) and write the canonical value for:
+`title` (a clean human title, e.g. the street address or a short descriptor — NOT a
+placeholder), `price` (the real MONTHLY number; normalize any weekly/nightly quote),
+`bedrooms`, `bathrooms`, `room_type` (`studio`/`1br`/`2br_plus`), `housing_type`,
+`sqft` (estimate from photos if absent), `address`, `neighborhood`. `apply_verdicts.py`
+writes these as the canonical row. Allowed keys: title, price, bedrooms, bathrooms,
+sqft, room_type, housing_type, area, neighborhood, address, lat, lng. Fill every key
+you can determine; only omit one you genuinely cannot (e.g. an undisclosed address —
+for which you should `disposition:"reject"`, `reject_reason:"undisclosed address"`).
+If the true MONTHLY price exceeds the $2,000 cap, also set `disposition:"reject"`,
+`reject_reason:"over $2000/mo cap"`. Changing area/address/coords re-classifies
+avoid/caution/ok at sync time. Scoring rules are unchanged. **See `OUTREACH.md`** for
+the contact/email pipeline that consumes these.
 `is_1br1ba` is literal (true only for an actual 1BR/1BA). A **whole 2+ bed** is
 NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
 **high `fit_score`** and set `room_type:"2br_plus"` (the dashboard badges it
@@ -425,20 +494,35 @@ NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
 - `scripts/owner_lookup.py` — assessor parcel facts for an address/coords (DataSF).
 - `scripts/market_comps.py` — cache of external market-rent ranges per
   (area_group, room_type); filled by the orchestrator via WebSearch (`set`).
-- `tools/apply_verdicts.py` — merge batch verdicts into the DB (rooms/etc rejected).
+- `tools/apply_verdicts.py` — merge batch verdicts into the DB (rooms/etc rejected);
+  also applies the verdict's `enrich` block (semantic detail entry — see OUTREACH.md).
 - `tools/purge_db.py` — DELETE listings we don't keep (`status` rejected/removed,
   trust `legit_score<40`, OR unsafe `area_tier=='avoid'`) and add their ids to a
   **blocklist** so they're never re-pulled/re-vetted; keeps ok-area + trust≥40
   (incl. flagged-scam rows at trust≥40). Dry-run by default; `--execute` to delete,
   then `sync_supabase.py` drops them from the cloud. Run after vetting each refresh.
-- `scripts/notify.py` — Telegram digest (thresholded; scams blocked).
+- `scripts/notify.py` — Telegram digest (thresholded; scams blocked). For the
+  outreach cron: `--list-new` (qualifying new picks as JSON, no send), `--message
+  "<text>"` (send ONE combined digest), `--mark-notified <ids>` (after that send).
+- `scripts/send_email.py` — Stage-2 outreach send (Gmail SMTP). Thin: Claude hand-
+  authors the human body from `sensitive/email_body.json`; this just sends it (real
+  SPF/DKIM/DMARC, no bot headers) and flips the listing to `status='contacted'`
+  (the only resend guard — refuses an already-contacted listing without `--force`).
+  `--listing <id>` resolves the relay + logs status; `--dry-run` previews. See OUTREACH.md.
+- `scripts/read_replies.py` — Stage-0 reply reader (Gmail IMAP). Pulls UNREAD inbox
+  messages, keeps the loosely rental-relevant ones, and emits `{contacted_listings,
+  replies}` JSON for Claude to MATCH + judge (the script does no brittle matching).
+  Marks fetched mail `\Seen`; `--since N` / `--keep-unseen`. See OUTREACH.md.
 - `scripts/fetch_cl_contacts.py` — ON-DEMAND (not in the auto-refresh): reveal a
   Craigslist listing's reply contact (relay email + phone) by driving the LOCAL
   **chromerpc** browser with raw CDP + human-like Bézier mouse clicks (CL hides
   contact behind the JS reply button). Coords come from the DOM bbox (buttons shift
   with viewport; fixed pixels fail), the reply panel loads async (we poll), and it
-  enumerates the reply-option-headers (email/call/text) clicking each. Stores
-  `reply_email` + `phone` on the row. Prereq: `cd chromerpc && ./bin/chromerpc
+  enumerates the reply-option-headers (email/call/text) clicking each. ALSO handles
+  the in-body "click to reveal contact" pattern (`reveal_in_body()`): if the post
+  BODY gates a phone/email behind a click/blocked section, it finds the trigger,
+  human-clicks it, waits, and reads the revealed number — self-skipping when there's
+  none. Stores `reply_email` + `phone` on the row. Prereq: `cd chromerpc && ./bin/chromerpc
   -headless -addr :50051 &`. **ONE pass per listing** — CL throttles repeated reply
   requests per IP (a batch of 20 got ~11; the rest throttle/expire and are retried
   on a later run since unfetched rows are reselected). `--all-vetted` | `<ids>` |

@@ -50,6 +50,76 @@ def haversine_km(lat1, lng1, lat2, lng2) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
+# ---- BART proximity (commute metric) ------------------------------------------
+# The user commutes by BART, so distance to the nearest station is a real signal —
+# both in the East Bay (Berkeley) and in the SF stations they'd rely on from the
+# Outer Mission / south-SF side. nearest_bart() works for ANY coord (SF or East Bay).
+# Official gtfs_latitude/gtfs_longitude from BART's own API (api.bart.gov, cmd=stns)
+# — an authoritative reference, not eyeballed.
+BART_STATIONS = [
+    # Berkeley
+    ("North Berkeley BART", 37.873967, -122.283440),
+    ("Downtown Berkeley BART", 37.870104, -122.268133),
+    ("Ashby BART", 37.852803, -122.270062),
+    # SF commute corridor (Outer Mission / south SF + downtown)
+    ("Daly City BART", 37.706121, -122.469081),
+    ("Balboa Park BART", 37.721585, -122.447506),
+    ("Glen Park BART", 37.733064, -122.433817),
+    ("24th St Mission BART", 37.752470, -122.418143),
+    ("16th St Mission BART", 37.765062, -122.419694),
+    ("Civic Center BART", 37.779732, -122.414123),
+    ("Powell St BART", 37.784471, -122.407974),
+    ("Montgomery St BART", 37.789405, -122.401066),
+    ("Embarcadero BART", 37.792874, -122.397020),
+]
+
+
+def nearest_bart(lat, lng) -> dict | None:
+    """Nearest BART station to (lat,lng): {station, km}. None if no coords."""
+    if lat is None or lng is None:
+        return None
+    name, d = min(((n, haversine_km(lat, lng, sla, sln))
+                   for n, sla, sln in BART_STATIONS), key=lambda x: x[1])
+    return {"station": name, "km": round(d, 2)}
+
+
+# ---- East Bay / Berkeley (BART-commute option) --------------------------------
+# Berkeley city only (no Oakland, per the user). FIRST-LEVEL is broad: any Berkeley
+# coord near a Berkeley BART stop is `ok`; SAFETY is handled here like the SF unsafe
+# zones — Oakland (south of the city line) and the South-Berkeley / Ashby flatlands
+# (the genuinely less-safe pocket) are `avoid`, the way the Tenderloin is in SF.
+_BERKELEY_BART = [(37.873967, -122.283440),   # North Berkeley BART
+                  (37.870104, -122.268133),   # Downtown Berkeley BART
+                  (37.852803, -122.270062)]   # Ashby BART (official gtfs coords)
+_BERKELEY_NEAR_KM = 1.6        # broad walk/short-roll to a Berkeley station
+_OAKLAND_LINE_LAT = 37.846     # Alcatraz Ave — south of this is Oakland (excluded)
+_EASTBAY_LNG = -122.34         # coords east of this are across the bay (not SF)
+# South Berkeley / Ashby flatlands — the less-safe pocket, treated `avoid` like the
+# Tenderloin (still gets a BART-distance, but excluded from picks). Centered on Ashby.
+_SOUTH_BERK_UNSAFE = (37.852803, -122.270062, 0.85)  # (lat, lng, radius_km)
+
+
+def _eastbay_tier(lat, lng) -> dict | None:
+    """Classify an East Bay coordinate. None when not east of the bay (SF falls
+    through to SF logic). Else: Oakland (south of the city line) and the South-
+    Berkeley unsafe pocket are `avoid`; a Berkeley coord near any Berkeley BART stop
+    is `ok`; anything far from a station is `avoid` (not a BART-commute fit)."""
+    if lat is None or lng is None or lng <= _EASTBAY_LNG:
+        return None
+    if lat < _OAKLAND_LINE_LAT:                       # Oakland — excluded
+        return {"area_tier": "avoid", "area_name": "Oakland (excluded)", "unsafe": True}
+    sla, sln, srad = _SOUTH_BERK_UNSAFE
+    if haversine_km(lat, lng, sla, sln) <= srad:      # South Berkeley / Ashby flats
+        return {"area_tier": "avoid",
+                "area_name": "South Berkeley / Ashby (less safe)", "unsafe": True}
+    near = min((haversine_km(lat, lng, bla, bln) for bla, bln in _BERKELEY_BART),
+               default=99.0)
+    if near <= _BERKELEY_NEAR_KM:
+        return {"area_tier": "ok", "area_name": "Berkeley (near BART)", "unsafe": False}
+    return {"area_tier": "avoid",
+            "area_name": "East Bay (not near a Berkeley BART stop)", "unsafe": True}
+
+
 def _name_hit(text: str | None, cfg: dict) -> str | None:
     """The matched area name if any of cfg's name substrings is in `text`."""
     if not text:
@@ -86,6 +156,11 @@ def classify(lat, lng, area_text: str | None = None,
     The coords should be the precise geocoded-address coords when the post supplied
     an address (see fetch_detail.py); otherwise the name match is the primary signal.
     """
+    # East Bay (across the bay) is a separate world: only safe near-BART Berkeley is
+    # `ok`, the rest is `avoid`. SF coords (lng <= -122.34) fall through to SF logic.
+    eb = _eastbay_tier(lat, lng)
+    if eb is not None:
+        return eb
     nh, zh = _match(area_text, place_name, lat, lng, _tier_cfg("unsafe"))
     if nh or zh:
         label = (zh["name"] if zh else None) or place_name or area_text or nh

@@ -1,6 +1,31 @@
 /* The San Francisco Property Register — interactions */
-let LISTINGS = [], MARKERS = [], MAP = null, VIEW = "list", PAGE = 1;
+let LISTINGS = [], MARKERS = [], MAP = null, DMAP = null, VIEW = "list", PAGE = 1;
 const PAGE_SIZE = 24;
+
+// Walk-to-BART metric (the user commutes by BART). Official gtfs coords from
+// api.bart.gov — Berkeley stations + the SF commute corridor (south SF + downtown).
+const BART_STATIONS = [
+  ["North Berkeley", 37.873967, -122.283440], ["Downtown Berkeley", 37.870104, -122.268133],
+  ["Ashby", 37.852803, -122.270062], ["Daly City", 37.706121, -122.469081],
+  ["Balboa Park", 37.721585, -122.447506], ["Glen Park", 37.733064, -122.433817],
+  ["24th St Mission", 37.752470, -122.418143], ["16th St Mission", 37.765062, -122.419694],
+  ["Civic Center", 37.779732, -122.414123], ["Powell St", 37.784471, -122.407974],
+  ["Montgomery St", 37.789405, -122.401066], ["Embarcadero", 37.792874, -122.397020],
+];
+function nearestBart(lat, lng) {
+  if (lat == null || lng == null) return null;
+  const R = 6371, rad = (d) => (d * Math.PI) / 180;
+  let best = null;
+  for (const [name, sla, sln] of BART_STATIONS) {
+    const dp = rad(sla - lat), dl = rad(sln - lng);
+    const a = Math.sin(dp / 2) ** 2 + Math.cos(rad(lat)) * Math.cos(rad(sla)) * Math.sin(dl / 2) ** 2;
+    const km = 2 * R * Math.asin(Math.sqrt(a));
+    if (!best || km < best.km) best = { name, km };
+  }
+  if (!best) return null;
+  const mi = best.km * 0.621371;
+  return `${best.km.toFixed(2)} km (${mi.toFixed(1)} mi) to ${best.name} BART`;
+}
 const SF = [37.7749, -122.4194];
 
 const TYPE = {
@@ -38,12 +63,14 @@ function textRelevance(d, toks) {
 }
 
 /* Semantic color: green→amber→red by SCORE (used for match + trust, not type). */
+// Match-quality tint for the card accent. NO red — red is reserved for genuine
+// scam/flag/reject signals only; a merely-lower match should not read as an alarm.
 function scoreColor(s) {
-  if (s == null) return "#9a8e79";
-  if (s >= 80) return "#2f7d4f";
-  if (s >= 60) return "#7a9a2e";
-  if (s >= 40) return "#c08a1a";
-  return "#b23222";
+  if (s == null) return "#b3a892";
+  if (s >= 80) return "#2f7d4f";   // strong
+  if (s >= 60) return "#6f7a39";   // good
+  if (s >= 40) return "#9c8f54";   // fair
+  return "#b3a892";                // low — muted, not alarming
 }
 
 const TRUST = {
@@ -274,18 +301,17 @@ function renderList(items) {
         <span class="seal ${tr.cls}">${tr.label} ${d.legit_score ?? "—"}</span>
         ${scam ? `<span class="stamp">Flagged</span>` : ""}
         <span class="priceplate"><span class="amt">$${(d.price ?? 0).toLocaleString()}</span> <span class="per">/ month</span></span>
-        ${d.photos && d.photos.length > 1 ? `<span class="photocount">${d.photos.length} ▦</span>` : ""}
+        ${d.photos && d.photos.length > 1 ? `<span class="photocount">${d.photos.length} photos</span>` : ""}
       </div>
       <div class="body">
         <h3 class="title">${esc(d.title || "Untitled entry")}</h3>
-        <div class="hood"><span class="pin">◈</span> ${esc(d.area || d.neighborhood || "San Francisco")}
+        <div class="hood">${esc(d.area || d.neighborhood || "San Francisco")}
           ${isAvoid(d) ? `<span class="prox avoid">unsafe area</span>`
             : isCaution(d) ? `<span class="prox caution">secondary area</span>` : ""}
           <span class="srctag">${sourceLabel(d.source)}${d.dup_count > 1 ? " +" + (d.dup_count - 1) : ""}</span></div>
         <div class="specs">
-          <span class="chip kind">${esc(t.kind)}</span>
           ${specs.map((s) => `<span class="chip">${esc(s)}</span>`).join("")}
-          ${d.dup_count > 1 ? `<span class="chip dup">📑 ${d.dup_count} posts</span>` : ""}
+          ${d.dup_count > 1 ? `<span class="chip dup">${d.dup_count} posts</span>` : ""}
         </div>
         <div class="match">
           <div class="lab"><span>Match score</span> <b>${fit}<span style="font-size:11px;color:var(--ink-faint)">/100</span></b></div>
@@ -424,16 +450,17 @@ function openFromHash() {
  * confidence — absence of it is neutral, not negative. */
 function verificationHtml(v) {
   if (!v || typeof v !== "object") return "";
-  const ICON = { verified: "✅", match: "✅", boost: "✅", ok: "✅", plausible: "✅",
-    confirmed: "✅", flag: "⚠️", mismatch: "⚠️", scam: "⚠️", fraud: "⚠️",
-    implausible: "⚠️", flood: "⚠️", neutral: "•", unverified: "•", unknown: "•" };
+  const MARK = { verified: "ok", match: "ok", boost: "ok", ok: "ok", plausible: "ok",
+    confirmed: "ok", flag: "bad", mismatch: "bad", scam: "bad", fraud: "bad",
+    implausible: "bad", flood: "bad", neutral: "na", unverified: "na", unknown: "na" };
+  const GLYPH = { ok: "✓", bad: "✕", na: "–" };
   const rows = Object.entries(v).map(([k, val]) => {
     const o = (val && typeof val === "object") ? val : { note: String(val) };
-    const ic = ICON[(o.outcome || "").toLowerCase()] || "•";
+    const cls = MARK[(o.outcome || "").toLowerCase()] || "na";
     const note = esc(o.note || o.outcome || "");
-    return `<li>${ic} <b>${esc(k)}</b>${note ? ": " + note : ""}</li>`;
+    return `<li><span class="vmark ${cls}">${GLYPH[cls]}</span> <b>${esc(k)}</b>${note ? ": " + note : ""}</li>`;
   }).join("");
-  return rows ? `<div class="flags verif"><h4>🔎 Verification</h4><ul>${rows}</ul></div>` : "";
+  return rows ? `<div class="infoblock verif"><h4>Verification</h4><ul>${rows}</ul></div>` : "";
 }
 
 function openModal(id) {
@@ -442,12 +469,15 @@ function openModal(id) {
   const t = typeOf(d), tr = trust(d);
   const gallery = (d.photos || []).map((p) => `<img src="${p}" alt="" referrerpolicy="no-referrer" onclick="window.open('${p}','_blank')" />`).join("");
   const flags = (d.red_flags && d.red_flags.length)
-    ? `<div class="flags"><h4>⚑ Red flags</h4><ul>${d.red_flags.map((f) => `<li>${esc(f)}</li>`).join("")}</ul></div>` : "";
-  const statusBadge = `<span class="statusbadge st-${esc(d.status || "new")}">${esc(d.status || "new")}</span>`;
+    ? `<div class="infoblock flags"><h4>Red flags</h4><ul>${d.red_flags.map((f) => `<li>${esc(f)}</li>`).join("")}</ul></div>` : "";
+  const verif = verificationHtml(d.verification);
+  const infoCols = [verif, flags].filter(Boolean);
+  const infoHtml = infoCols.length
+    ? `<div class="info-grid cols-${infoCols.length}">${infoCols.join("")}</div>` : "";
   const specs = [];
   if (d.bedrooms != null) specs.push(d.bedrooms ? `${d.bedrooms} Bed` : "Studio");
   if (d.bathrooms != null) specs.push(`${d.bathrooms} Bath`);
-  specs.push(d.sqft ? `~${d.sqft} ft²` : "ft² n/a");
+  specs.push(d.sqft ? `~${d.sqft} ft²` : "size n/a");
 
   // all source posts for this unit (primary + duplicate reposts), best first
   const sources = [
@@ -459,69 +489,79 @@ function openModal(id) {
   const emailMatch = (d.contact || "").match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
   // prefer the relay email we fetched via the reply flow, else any email in the post
   const email = d.reply_email || (emailMatch ? emailMatch[0] : null);
-  const contactsHtml = `
+  const cRows = [];
+  if (d.contact_name) cRows.push(["Name", esc(d.contact_name)]);
+  if (d.contact_details) cRows.push(["Phone", esc(d.contact_details).replace(/\n/g, "<br>")]);
+  else if (d.phone) cRows.push(["Phone", `<a href="tel:${esc(d.phone)}">${esc(d.phone)}</a>`]);
+  if (email) cRows.push(["Email",
+    `<a href="mailto:${esc(email)}">${esc(email)}</a>${d.reply_email ? ` <span class="relaytag">CL relay</span>` : ""}`]);
+  const contactsHtml = cRows.length ? `
     <div class="contacts">
       <h4>Contact</h4>
-      ${d.contact_name ? `<div class="crow"><span class="cic">👤</span> ${esc(d.contact_name)}</div>` : ""}
-      ${d.phone ? `<div class="crow"><span class="cic">📞</span> <a href="tel:${esc(d.phone)}">${esc(d.phone)}</a></div>` : ""}
-      ${email ? `<div class="crow"><span class="cic">✉️</span> <a href="mailto:${esc(email)}">${esc(email)}</a>${d.reply_email ? ` <span class="relaytag">CL relay</span>` : ""}</div>` : ""}
-      <div class="crow"><span class="cic">🔗</span> <a href="${d.url}" target="_blank" rel="noopener">Reply on Craigslist ↗</a></div>
-      ${(!d.phone && !email) ? `<div class="cnote">No direct phone/email yet — use the Craigslist reply button (relay email).</div>` : ""}
-    </div>`;
+      ${cRows.map(([k, v]) => `<div class="crow"><span class="ck">${k}</span><span class="cv">${v}</span></div>`).join("")}
+    </div>` : "";
   const sourcesHtml = sources.length > 1 ? `
     <div class="sources">
-      <h4>${sources.length} source posts${nSites > 1 ? " · across " + nSites + " sites" : ""} · best first</h4>
+      <h4>${sources.length} source posts${nSites > 1 ? " · " + nSites + " sites" : ""}</h4>
       ${sources.map((s, i) => `<a class="srclink" href="${s.url}" target="_blank" rel="noopener">
         <span class="srcrank">${i + 1}</span>
         <span class="srcsite">${esc(sourceLabel(s.source))}</span>
         <b>$${(s.price ?? 0).toLocaleString()}</b>
-        <span>${TEMOJI[s.legit_label] || "⚪"} ${s.legit_score ?? "?"} · match ${s.fit_score ?? "?"} · ${esc(s.area || "")}</span>
+        <span class="srcmeta">trust ${s.legit_score ?? "?"} · match ${s.fit_score ?? "?"} · ${esc(s.area || "")}</span>
         <span class="srcgo">↗</span></a>`).join("")}
     </div>` : "";
 
   document.getElementById("modal-content").innerHTML = `
-    <div class="d-kicker">
-      <span style="color:var(--ink);font-weight:700">${t.label.toUpperCase()}</span> ·
-      <span>${esc(d.neighborhood || d.area || "San Francisco")}</span> ·
-      <span class="seal ${tr.cls}" style="position:static;border:none;background:none;padding:0">${tr.label} ${d.legit_score ?? "—"}%</span>
+    <div class="d-head">
+      <div class="d-kicker">${t.label.toUpperCase()} <span class="ksep">·</span> ${esc(d.neighborhood || d.area || "San Francisco")}</div>
+      <div class="d-price">$${(d.price ?? 0).toLocaleString()}<span class="permo">/mo</span></div>
+      <div class="d-title">${esc(d.title || "")}</div>
+      ${d.address ? `<div class="d-addr">${esc(d.address)}</div>` : ""}
     </div>
-    <div class="d-price">$${(d.price ?? 0).toLocaleString()}<span style="font-size:18px;color:var(--ink-faint);font-family:var(--mono)"> /mo</span></div>
-    <div class="d-title">${esc(d.title || "")}</div>
-    ${d.address ? `<div class="d-addr">📍 ${esc(d.address)}</div>` : ""}
-    <div class="d-meta">${specs.map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>
+    <div class="statbar">
+      <div class="stat"><span class="sv">${d.legit_score ?? "—"}</span><span class="sk">Trust</span></div>
+      <div class="stat"><span class="sv">${d.fit_score ?? "—"}</span><span class="sk">Match</span></div>
+      <div class="stat"><span class="sv vt ${tr.cls}">${tr.label}</span><span class="sk">Vetting</span></div>
+      <div class="stat"><span class="sv">${esc(d.status || "new")}</span><span class="sk">Status</span></div>
+      <div class="stat wide"><span class="sv">${esc(specs.join(" · "))}</span><span class="sk">Unit</span></div>
+    </div>
     <div class="gallery">${gallery || "<i>no photographs on file</i>"}</div>
-    <div class="verdict">
-      <div class="vblock">
-        ${d.verdict_summary ? `<h4>Assessment</h4><p>${esc(d.verdict_summary)}</p>` : ""}
-        ${flags}
-        ${verificationHtml(d.verification)}
-        ${d.recommendation ? `<h4>Recommendation</h4><p>${esc(d.recommendation)}</p>` : ""}
-        <h4>The listing</h4>
-        <div class="desc">Full post text lives on the original listing —
-          <a href="${d.url}" target="_blank" rel="noopener">read it on ${esc(sourceLabel(d.source))} ↗</a>.</div>
-      </div>
-      <div class="vblock">
-        <h4>Scores</h4>
-        <div class="scores">
-          <div class="scorebox"><div class="n">${d.legit_score ?? "—"}</div><div class="k">Trust</div></div>
-          <div class="scorebox"><div class="n">${d.fit_score ?? "—"}</div><div class="k">Match</div></div>
-        </div>
-        <h4 style="margin-top:16px">Disposition</h4>
-        <div class="status-row">${statusBadge}</div>
-      </div>
-    </div>
+    ${(d.lat != null && d.lng != null)
+      ? `<div class="locblock"><h4>Location</h4><div id="d-map" class="d-map"></div>
+           ${nearestBart(d.lat, d.lng) ? `<div class="locnote bart">🚇 ${nearestBart(d.lat, d.lng)}</div>` : ""}
+           <div class="locnote">Approximate — pin is block / neighborhood accurate, not the exact unit.</div></div>`
+      : (d.address
+        ? `<div class="locblock"><h4>Location</h4><a class="loclink" href="https://www.openstreetmap.org/search?query=${encodeURIComponent((d.address || "") + ", San Francisco, CA")}" target="_blank" rel="noopener">View ${esc(d.address)} on OpenStreetMap ↗</a></div>`
+        : "")}
+    ${d.verdict_summary ? `<div class="infoblock"><h4>Assessment</h4><p>${esc(d.verdict_summary)}</p></div>` : ""}
+    ${infoHtml}
+    ${d.recommendation ? `<div class="infoblock rec"><h4>Recommendation</h4><p>${esc(d.recommendation)}</p></div>` : ""}
     ${contactsHtml}
     ${sourcesHtml}
     <div class="d-foot">
-      <a class="origin" href="${d.url}" target="_blank" rel="noopener">View original ↗</a>
+      <a class="origin" href="${d.url}" target="_blank" rel="noopener">View original on ${esc(sourceLabel(d.source))} ↗</a>
     </div>`;
   const m = document.getElementById("modal");
   m.classList.remove("hidden"); m.setAttribute("aria-hidden", "false");
+  // small location map (free CartoDB/OSM tiles; coords are block-accurate)
+  if (DMAP) { DMAP.remove(); DMAP = null; }
+  if (d.lat != null && d.lng != null) {
+    setTimeout(() => {
+      const el = document.getElementById("d-map");
+      if (!el || DMAP) return;
+      DMAP = L.map(el, { scrollWheelZoom: false, attributionControl: false }).setView([d.lat, d.lng], 15);
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", { maxZoom: 19 }).addTo(DMAP);
+      L.circleMarker([d.lat, d.lng], { radius: 8, weight: 2, color: "#fff",
+        fillColor: scoreColor(d.fit_score), fillOpacity: 1 }).addTo(DMAP);
+      DMAP.invalidateSize();
+    }, 80);
+  }
 }
 
 function closeModal() {
   const m = document.getElementById("modal");
   m.classList.add("hidden"); m.setAttribute("aria-hidden", "true");
+  if (DMAP) { DMAP.remove(); DMAP = null; }
 }
 
 /* ----------------------------------------------------------- init */

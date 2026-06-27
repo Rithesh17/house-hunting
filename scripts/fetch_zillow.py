@@ -72,9 +72,12 @@ def _snap_toz(days: int) -> str:
 
 
 def auto_time_on_zillow(conn, fallback: str = "1w") -> str:
-    """Recency window to request, derived from how long ago we last pulled Zillow.
-    ceil the gap (so a listing posted just after the prior run isn't missed) and
-    snap to a real bucket. No prior pull (fresh DB) -> `fallback`."""
+    """Recency window to request. Zillow is gated to ONCE PER DAY, so the standard
+    window is the LAST 24 HOURS ('1d') — even with normal cron timing drift (a pull
+    25-36h after the last one is still "today's new listings", NOT a week's worth;
+    the buckets jump 1d->1w with nothing between, so snapping a 25h gap up would
+    wastefully request a whole week). Only widen if a full day or more was genuinely
+    MISSED (Mac asleep/off >~1.5 days), to catch up. Fresh DB -> `fallback`."""
     last = db.get_meta(conn, "last_pull_zillow")
     if not last:
         return fallback
@@ -82,7 +85,9 @@ def auto_time_on_zillow(conn, fallback: str = "1w") -> str:
         gap = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 86400
     except (ValueError, TypeError):
         return fallback
-    return _snap_toz(max(1, math.ceil(gap)))
+    if gap <= 1.5:                       # normal once/day cadence -> last 24h
+        return "1d"
+    return _snap_toz(math.ceil(gap))     # a day+ was missed -> widen to catch up
 
 
 def run_actor(max_price: int, max_items: int, time_on_zillow: str,
@@ -203,6 +208,9 @@ def main() -> None:
                          "(default: auto from last pull; '' = any age / full pull)")
     ap.add_argument("--no-details", action="store_true",
                     help="skip fetchDetails (no descriptions; cheaper, $0.0009/result)")
+    ap.add_argument("--raw-file",
+                    help="ingest items from a saved raw JSON file instead of calling "
+                         "the actor (replay a prior pull for free; no API charge)")
     args = ap.parse_args()
     cfg = common.load_config()
     max_price = cfg["max_price"]
@@ -212,17 +220,25 @@ def main() -> None:
     src = "manual" if args.time_on_zillow is not None else "auto from last pull"
     fetch_details = not args.no_details
 
-    print(f"[zillow] igolaizola PPE (SF rent, entirePlace, <=${max_price}, newest, "
-          f"timeOnZillow={toz or 'any'} [{src}], details={fetch_details}, "
-          f"max {args.max_items})...")
-    items = run_actor(max_price, args.max_items, toz, fetch_details)
-    print(f"  {len(items)} listings returned")
+    if args.raw_file:
+        with open(args.raw_file) as f:
+            items = json.load(f)
+        print(f"[zillow] REPLAY from {args.raw_file}: {len(items)} items (no API call)")
+    else:
+        print(f"[zillow] igolaizola PPE (SF rent, entirePlace, <=${max_price}, newest, "
+              f"timeOnZillow={toz or 'any'} [{src}], details={fetch_details}, "
+              f"max {args.max_items})...")
+        items = run_actor(max_price, args.max_items, toz, fetch_details)
+        print(f"  {len(items)} listings returned")
 
     sess = common.session(cfg)
     new = skipped = 0
     for it in items:
         zpid = str(it.get("zpid") or "")
         price = (it.get("price") or {}).get("value")
+        # Skip building-cards (no unit price) and over-cap. `price` here is used ONLY
+        # as the cap filter + a provisional value; the vetting subagent re-authors the
+        # canonical price (and every other display field) from the raw API in enrich.
         if not zpid.isdigit() or not price or price > max_price:
             skipped += 1
             continue
@@ -232,40 +248,51 @@ def main() -> None:
         url = it.get("url") or ""
         if url and not url.startswith("http"):
             url = "https://www.zillow.com" + url
-        beds = it.get("bedrooms")
-        room_type = ("studio" if beds == 0 else "1br" if beds == 1
-                     else "2br_plus" if beds and beds >= 2 else "unknown")
-        addr = it.get("address") or {}
-        street = addr.get("streetAddress")
-        if street and "undisclosed" in street.lower():
-            street = None
         loc = it.get("location") or {}
         det = it.get("_details") or {}
         lat, lng = loc.get("latitude"), loc.get("longitude")
-        # Undisclosed-address listings have no top-level coords, but _details does —
-        # use it so the area model can still classify them (else they default to ok).
+        # Coords are the ONE thing we keep deterministic (the area model owns area):
+        # top-level location, falling back to _details. Undisclosed listings have
+        # neither — the subagent rejects those (we don't keep undisclosed addresses).
         if lat is None or lng is None:
             lat = det.get("latitude") if det.get("latitude") is not None else lat
             lng = det.get("longitude") if det.get("longitude") is not None else lng
-        description = det.get("description")
         photos = _photos(it)
-        title = street or "Zillow rental"
-        extra = _source_extra(it, det)
-        # The API has no neighbourhood field, so derive an area LABEL from the coords
-        # (else every Zillow row shows "(unspecified SF)" despite having a location).
-        hood = reverse_geocode(sess, lat, lng) or ""
-        time.sleep(1.0)  # Nominatim courtesy rate limit
-        area_label = hood or cfg.get("unspecified_area_name", "(unspecified SF)")
 
-        db.insert_stub(conn, post_id=pid, url=url, title=title, price=price,
-                       room_type=room_type, area=area_label,
-                       neighborhood=hood, posted_at=_posted_at(it))
+        # NO AUTO-MAP. We do NOT translate API fields into the canonical display
+        # columns (title/address/beds/baths/room_type/sqft/neighborhood) — that
+        # brittle mapping mislabeled real units as "Apartment for rent". Instead we
+        # store the RAW API ground-truth in source_extra.raw, and the vetting
+        # subagent reads it (+ photos + description) and AUTHORS every display field
+        # in its enrich block. See CLAUDE.md ("fields are LLM-authored, never
+        # auto-mapped"). We keep only: coords (area model), price (cap filter +
+        # provisional), url, photos, description, and the raw bundle.
+        addr = it.get("address") or {}
+        det_addr = det.get("address") or {}
+        description = det.get("description")
+        extra = _source_extra(it, det)
+        raw = {
+            "building_address": addr.get("streetAddress"),
+            "unit_address": det_addr.get("streetAddress"),
+            "city": addr.get("city") or det_addr.get("city"),
+            "zipcode": addr.get("zipcode") or det_addr.get("zipcode"),
+            "bedrooms": it.get("bedrooms"),
+            "bathrooms": it.get("bathrooms"),
+            "living_area_sqft": it.get("livingArea"),
+            "home_type": it.get("homeType") or it.get("propertyType"),
+            "building_title": it.get("title"),
+            "api_monthly_price": price,
+        }
+        extra["raw"] = {k: v for k, v in raw.items() if v not in (None, "")}
+
+        db.insert_stub(conn, post_id=pid, url=url,
+                       title=f"Zillow {zpid} — vet for details", price=price,
+                       room_type="unknown",
+                       area=cfg.get("unspecified_area_name", "(unspecified SF)"),
+                       neighborhood=None, posted_at=_posted_at(it))
         image_dir, image_count = fetch_detail.download_images(sess, pid, photos)
         db.update_detail(conn, pid, {
-            "source": "zillow",
-            "bedrooms": float(beds) if beds is not None else None,
-            "bathrooms": float(it["bathrooms"]) if it.get("bathrooms") is not None else None,
-            "sqft": it.get("livingArea"), "lat": lat, "lng": lng, "address": street,
+            "source": "zillow", "lat": lat, "lng": lng,
             "description": description,
             "image_urls": json.dumps(photos), "image_count": image_count,
             "source_extra": json.dumps(extra) if extra else None,

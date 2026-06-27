@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -153,10 +154,57 @@ def main() -> None:
                     help="with --new, send NOTHING when no new picks qualify — for "
                          "frequent (e.g. 4-hourly) cron runs, to avoid repeated "
                          "'nothing new' pings. Only real picks ping.")
+    ap.add_argument("--message", metavar="TEXT",
+                    help="send this exact text as ONE Telegram message and exit. The "
+                         "outreach cron uses this to send a single combined digest "
+                         "(new picks + emails sent + replies). Supports basic HTML.")
+    ap.add_argument("--list-new", action="store_true",
+                    help="print qualifying NEW (un-notified) picks as JSON and exit — "
+                         "no send, no mark. Used to compose the single combined digest.")
+    ap.add_argument("--mark-notified", nargs="+", metavar="ID",
+                    help="mark the given listing ids notified and exit (call AFTER the "
+                         "combined digest is sent, for the picks it included).")
     args = ap.parse_args()
+
+    if args.message:
+        ok = send_text(args.message)
+        sys.exit(0 if ok else 1)
+
+    if args.mark_notified:
+        conn = db.connect()
+        for pid in args.mark_notified:
+            db.mark_notified(conn, pid)
+        conn.commit()
+        conn.close()
+        print(f"Marked {len(args.mark_notified)} listing(s) notified.")
+        sys.exit(0)
 
     cfg = common.load_config()
     conn = db.connect()
+
+    if args.list_new:
+        rows = conn.execute(
+            "SELECT * FROM listings WHERE status!='rejected' AND notified=0 "
+            "AND legit_score IS NOT NULL").fetchall()
+        prim = [r for r in rows if r["dup_group"] in (None, r["id"])]
+        targets = sorted((r for r in prim if qualifies(r, cfg)), key=_rank_key)
+        out = []
+        for r in targets:
+            d = db.row_to_dict(r)
+            area = geo.classify(d.get("lat"), d.get("lng"), d.get("area"))
+            out.append({
+                "id": d["id"], "title": d.get("title"), "price": d.get("price"),
+                "room_type": d.get("room_type"), "bedrooms": d.get("bedrooms"),
+                "bathrooms": d.get("bathrooms"), "sqft": d.get("sqft"),
+                "area": area.get("area_name") or d.get("area"),
+                "area_tier": area.get("area_tier"),
+                "legit_score": d.get("legit_score"), "legit_label": d.get("legit_label"),
+                "fit_score": d.get("fit_score"), "summary": d.get("verdict_summary"),
+                "url": d.get("url"), "link": f"{DASHBOARD_URL}/#id={d['id']}",
+            })
+        conn.close()
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        sys.exit(0)
 
     if args.new:
         # qualifying NEW (un-notified) primaries from this fetch, best first

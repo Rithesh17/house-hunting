@@ -48,7 +48,9 @@ PY = sys.executable or "py"
 
 PRE_STEPS = [
     ("Hydrate from Supabase", ["scripts/hydrate_from_supabase.py"]),
-    ("Craigslist pull", ["scripts/fetch_listings.py"]),
+    ("Craigslist pull (SF)", ["scripts/fetch_listings.py"]),
+    ("Craigslist pull (Berkeley / East Bay)",
+     ["scripts/fetch_listings.py", "--region", "eby"]),
     ("Zumper pull", ["scripts/fetch_zumper.py"]),
 ]
 ZILLOW_STEP = ("Zillow pull (Apify)", ["scripts/fetch_zillow.py"])

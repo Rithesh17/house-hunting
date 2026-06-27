@@ -115,6 +115,116 @@ def extract_description(html: str) -> str | None:
     return max(cands, key=len) if cands else None
 
 
+# --- chromerpc full-page detail (replaces the dead Playwright path) -----------
+# Zumper renders the body + contact client-side and lazy-loads sections on scroll
+# ("One sec, gathering ..."). A real browser (chromerpc) scroll-loads the whole
+# page, then we read the ABOUT body (so the SHARED-ROOM GATE works — a private-
+# room-in-a-shared-house is invisible from photos alone) + the posted age + a
+# best-effort contact. Contact placement varies, so we scan the WHOLE rendered
+# text rather than rely on a fixed selector.
+_AGE_RE = re.compile(r"(\d+)\+?\s*(hour|day|week|month)s?\s*ago", re.I)
+_PHONE_RE = re.compile(r"\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?:\s*(?:ext\.?|x)\s*\d+)?", re.I)
+
+
+def _chromerpc_ready() -> bool:
+    try:
+        import fetch_cl_contacts as cr
+        return "_err" not in cr._call(
+            "cdp.runtime.RuntimeService/Evaluate",
+            {"expression": "1", "return_by_value": True})
+    except Exception:
+        return False
+
+
+def _age_to_iso(text: str) -> str | None:
+    if re.search(r"\b(today|just posted)\b", text, re.I):
+        return db.now()
+    m = _AGE_RE.search(text)
+    if not m:
+        return None
+    hrs = {"hour": 1, "day": 24, "week": 168, "month": 720}[m.group(2).lower()] * int(m.group(1))
+    import datetime as _dt
+    return (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=hrs)).isoformat()
+
+
+def _about_from_text(text: str) -> str | None:
+    """The real body sits under 'About <addr>' (after a 'Sweet deal!' note) and
+    before 'Building details'/'Neighborhood'. This is where room-share language
+    ('private master bedroom', 'sharing this house', 'roommates') shows up."""
+    k = text.find("About ")
+    if k < 0:
+        return None
+    ends = [i for i in (text.find("Building details", k), text.find("Neighborhood", k),
+                        text.find("Similar ", k)) if i > k] + [k + 1600]
+    seg = text[k:min(ends)]
+    seg = re.sub(r"^About\b.*?\bUSA\b\s*", "", seg, flags=re.S)         # strip 'About <addr>, USA'
+    if seg.lstrip().startswith("About"):                                # no 'USA' -> try the CA zip
+        seg = re.sub(r"^About\b.*?CA \d{5},?\s*", "", seg, flags=re.S)
+    seg = re.sub(r"^Home\S.*?\n", "", seg).strip()
+    seg = re.sub(r"Sweet deal!.*?median[^.]*\.", "", seg, flags=re.S).strip()
+    seg = re.sub(r"\s+", " ", seg).strip(" ,")
+    return seg if len(seg) >= 60 else None
+
+
+_NONNAME = {"contact", "avail", "ask", "report", "request", "view", "tour", "check",
+            "property", "question", "available", "rent", "home", "house", "apartment"}
+
+
+def _contact_from_text(text: str) -> dict:
+    """Best-effort, no fixed selector: the contact (name + routed number/extension)
+    sits inconsistently, so find the phone and grab the window around it (the name
+    usually precedes it). Stored for the vetting step to read. Zumper numbers are
+    routed (no direct landlord line)."""
+    out = {"contact_name": None, "phone": None, "contact_details": None}
+    ph = _PHONE_RE.search(text)
+    if not ph:
+        return out
+    out["phone"] = re.sub(r"\s+", " ", ph.group(0)).strip()
+    # contact_details only when there's a real special step (extension/code beyond the
+    # bare number); a plain number lives in `phone`, and we never store surrounding prose.
+    if re.search(r"\b(?:ext\.?|x)\s*\d{1,5}\b|\btext\s+\d{1,5}\s+to\b", out["phone"], re.I):
+        out["contact_details"] = ("Call/Text " + out["phone"])[:160]
+    pre = re.sub(r"\s+", " ", text[max(0, ph.start() - 70):ph.start()]).strip()
+    names = [w for w in re.findall(r"\b([A-Z][a-z]{1,})\b", pre) if w.lower() not in _NONNAME]
+    if names:
+        out["contact_name"] = names[-1]
+    return out
+
+
+def chromerpc_zumper_detail(url: str) -> dict | None:
+    """Render the full Zumper listing via chromerpc (scroll to load every lazy
+    section) and extract {description, posted_at, contact_name, phone,
+    contact_details}. Returns None if chromerpc isn't reachable on :50051."""
+    import time
+    import fetch_cl_contacts as cr
+    if not _chromerpc_ready():
+        return None
+    try:
+        cr._call("cdp.emulation.EmulationService/SetDeviceMetricsOverride",
+                 {"width": 1440, "height": 1200, "deviceScaleFactor": 1, "mobile": False})
+        cr.navigate(url)
+        time.sleep(6)
+        H = cr.ev("document.body.scrollHeight") or 6000
+        for _ in range(3):                          # scroll-load until lazy sections settle
+            for y in range(0, int(H) + 800, 500):
+                cr.ev(f"window.scrollTo(0,{y})")
+                time.sleep(0.45)
+            if not cr.ev("(document.body.innerText.match(/One sec, gathering/g)||[]).length"):
+                break
+            H = cr.ev("document.body.scrollHeight") or H
+        cr.ev("window.scrollTo(0,0)")
+        time.sleep(0.4)
+        html = cr.ev("document.documentElement.outerHTML") or ""
+        text = cr.ev("document.body.innerText") or ""
+    except Exception as e:
+        print(f"  ! chromerpc zumper detail failed for {url}: {e}", file=sys.stderr)
+        return None
+    out = {"description": _about_from_text(text) or extract_description(html),
+           "posted_at": _age_to_iso(text)}
+    out.update(_contact_from_text(text))
+    return out
+
+
 class DescriptionFetcher:
     """Lazily-started headless browser that reads one listing description at a
     time, reusing a single page (keeps the challenge cookie warm). Degrades to
@@ -206,22 +316,17 @@ def main() -> None:
     print(f"  {len(pins)} unique pins in SF")
 
     sess = common.session(cfg)  # for image downloads
-    descf = DescriptionFetcher()  # headless browser for listing bodies
+    descf = DescriptionFetcher()  # fallback (Playwright; usually a no-op here)
+    use_cr = _chromerpc_ready()
+    print("  [zumper] detail via " + ("chromerpc full-page render (description + contact)"
+          if use_cr else "Playwright fallback (likely description=None)"))
     new = 0
     for p in pins:
         price = p.get("min_price")
-        if not price or price > max_price:
+        if not price or price > max_price:   # cap filter + provisional price only
             continue
         pid = f"z{p['listing_id']}"
         url = "https://www.zumper.com" + (p.get("url") or "")
-        title = p.get("building_name") or p.get("address") or "Zumper listing"
-        hood = p.get("neighborhood_name") or ""
-        # map by neighborhood only (NOT address — that pollutes the area label)
-        area = fetch_listings.assign_area(hood, cfg) \
-            or cfg.get("unspecified_area_name", "(unspecified SF)")
-        beds = p.get("min_bedrooms")
-        room_type = ("studio" if beds == 0 else "1br" if beds == 1
-                     else "2br_plus" if beds and beds >= 2 else "unknown")
         image_ids = p.get("image_ids") or []
         # zumpercdn requires the WxH path + query params; bare sizes 404.
         image_urls = [f"https://img.zumpercdn.com/{i}/1280x960?dpr=1&fit=crop&h=542&q=76&w=991"
@@ -229,22 +334,46 @@ def main() -> None:
 
         if db.listing_exists(conn, pid) or db.is_blocked(conn, pid):
             continue
-        db.insert_stub(conn, post_id=pid, url=url, title=title, price=price,
-                       room_type=room_type, area=area, neighborhood=hood,
-                       posted_at=None)
+        # NO AUTO-MAP. We do NOT derive title/room_type/beds/baths/sqft/address/
+        # neighborhood from the map API — that logic is gone. We keep only coords
+        # (area model), price (cap + provisional), url, photos, the raw page
+        # description, and the raw map-API fields in source_extra.raw. The vetting
+        # subagent reads all that (+ photos) and AUTHORS every display field in its
+        # enrich block. See CLAUDE.md (LLM-authored, never auto-mapped).
+        db.insert_stub(conn, post_id=pid, url=url,
+                       title=f"Zumper {p['listing_id']} — vet for details", price=price,
+                       room_type="unknown",
+                       area=cfg.get("unspecified_area_name", "(unspecified SF)"),
+                       neighborhood=None, posted_at=None)
         # download images transiently for vetting
         dl_urls = [f"https://img.zumpercdn.com/{i}/1280x960" for i in image_ids]
         image_dir, image_count = fetch_detail.download_images(sess, pid, dl_urls)
-        # fetch the listing body (headless) so subagents can catch room-shares
-        description = descf.fetch(url)
-        db.update_detail(conn, pid, {
-            "source": "zumper", "bedrooms": float(beds) if beds is not None else None,
-            "bathrooms": float(p["min_bathrooms"]) if p.get("min_bathrooms") is not None else None,
-            "sqft": p.get("min_square_feet"), "lat": p.get("lat"), "lng": p.get("lng"),
-            "address": p.get("address"), "neighborhood": hood,
-            "description": description,
+        # Full-page detail so the SHARED-ROOM GATE works: chromerpc renders the
+        # body + contact (preferred); else the dead Playwright path -> None.
+        detail = chromerpc_zumper_detail(url) if use_cr else None
+        if detail is None:
+            detail = {"description": descf.fetch(url)}
+        raw = {
+            "building_name": p.get("building_name"),
+            "address": p.get("address"),
+            "min_bedrooms": p.get("min_bedrooms"),
+            "min_bathrooms": p.get("min_bathrooms"),
+            "min_square_feet": p.get("min_square_feet"),
+            "neighborhood_name": p.get("neighborhood_name"),
+            "min_price": price,
+        }
+        raw = {k: v for k, v in raw.items() if v not in (None, "")}
+        fields = {
+            "source": "zumper", "lat": p.get("lat"), "lng": p.get("lng"),
+            "description": detail.get("description"),
             "image_urls": json.dumps(image_urls), "image_count": image_count,
-        })
+            "source_extra": json.dumps({"raw": raw}) if raw else None,
+        }
+        # carry posted_at + contact only when we actually found them (don't null-overwrite)
+        for k in ("posted_at", "phone", "contact_name", "contact_details"):
+            if detail.get(k):
+                fields[k] = detail[k]
+        db.update_detail(conn, pid, fields)
         conn.commit()
         new += 1
 

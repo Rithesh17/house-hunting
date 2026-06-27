@@ -4,7 +4,15 @@
 Duplicates are detected by:
   - sharing one or more IDENTICAL craigslist photos (same image id in the
     remote image URLs — works without any local files), and/or
-  - same normalized street address + price + room_type.
+  - same normalized street address + price + room_type, and/or
+  - same normalized address (or ~same coords) + room_type with a CLOSE price
+    (<=PRICE_TOL apart) — catches the same unit RE-POSTED at a changed rent
+    (a different post id + different title + re-uploaded photos), and/or
+  - same captured contact phone + room_type — the landlord's repost of one unit.
+
+This matters for outreach: a relist of a unit we already CONTACTED must fold into
+the same cluster so we don't email it again. (send_email.py adds a unit-level guard
+on top, so even a missed cluster won't double-contact.)
 
 Only non-rejected listings are clustered. Run after vetting:
     py tools/dedup.py
@@ -14,11 +22,14 @@ import os
 import re
 import sys
 from collections import defaultdict
+from itertools import combinations
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
 import db  # noqa: E402
 
 IMG_ID_RE = re.compile(r"images\.craigslist\.org/([\w]+)_\d+x\d+")
+PRICE_TOL = 0.15  # a relist often nudges the rent; treat a <=15% gap as the same unit
+PHONE_RE = re.compile(r"\d")
 
 
 def ensure_column(conn):
@@ -38,17 +49,22 @@ def img_ids(image_urls_json):
     return {m.group(1) for u in urls for m in [IMG_ID_RE.search(u)] if m}
 
 
-def addr_key(r):
-    if not r["address"]:
+def norm_addr(address):
+    """Normalize a street address so the SAME unit matches across sources / reposts
+    ("2111 grove st near cole" == "2111 grove st"; "... apt 5" / "... #310" == "...")."""
+    if not address:
         return None
-    a = re.sub(r"\s+", " ", r["address"].lower()).strip()
+    a = re.sub(r"\s+", " ", address.lower()).strip()
     a = re.sub(r",?\s*(san francisco|ca|usa|\d{5}).*$", "", a).strip(" ,")
-    # Drop cross-street / unit qualifiers so the SAME unit matches across sources
-    # ("2111 grove st near cole" == "2111 grove st"; "... apt 5" / "... #310" == "...").
     a = re.sub(r"\s+(near|at|@|by|off)\s+.+$", "", a).strip(" ,")
     a = re.sub(r"[#,]?\s*\b(apt|apartment|unit|suite|ste|rm|room)\b\.?\s*\w*$", "", a).strip(" ,#")
     a = re.sub(r"\s+#\s*\w+$", "", a).strip(" ,#")
     a = re.sub(r"\s+", " ", a).strip()
+    return a or None
+
+
+def addr_key(r):
+    a = norm_addr(r["address"])
     return f"{a}|{r['price']}|{r['room_type']}" if a else None
 
 
@@ -59,6 +75,37 @@ def coord_key(r):
     if r["lat"] is None or r["lng"] is None or not r["price"]:
         return None
     return f"{round(r['lat'], 3)},{round(r['lng'], 3)}|{r['price']}|{r['room_type']}"
+
+
+def addr_only_key(r):
+    """Address + room_type, PRICE-AGNOSTIC. Members are union'd only if their prices
+    are within PRICE_TOL — so a relist at a changed rent folds in, but two genuinely
+    different units that merely share a building address (and differ a lot in price)
+    do not."""
+    a = norm_addr(r["address"])
+    return f"{a}|{r['room_type']}" if a else None
+
+
+def coord_only_key(r):
+    """~Same coords + room_type, PRICE-AGNOSTIC (price checked before union). Catches
+    a price-changed repost when the address is undisclosed."""
+    if r["lat"] is None or r["lng"] is None:
+        return None
+    return f"{round(r['lat'], 3)},{round(r['lng'], 3)}|{r['room_type']}"
+
+
+def phone_key(r):
+    """Captured contact phone (digits only) + room_type — the same landlord's repost
+    of one unit. Relay emails are per-post (unique), so they can't link reposts; a
+    phone can."""
+    digits = "".join(PHONE_RE.findall(r["phone"] or ""))
+    return f"{digits}|{r['room_type']}" if len(digits) >= 10 else None
+
+
+def _price_close(a, b, tol=PRICE_TOL):
+    if not a or not b:
+        return False
+    return abs(a - b) <= tol * max(a, b)
 
 
 class UF:
@@ -82,6 +129,9 @@ def main():
     by_hash = defaultdict(list)
     by_addr = defaultdict(list)
     by_coord = defaultdict(list)
+    by_phone = defaultdict(list)
+    by_addr_only = defaultdict(list)   # price-agnostic; union'd only if price-close
+    by_coord_only = defaultdict(list)
     for r in rows:
         uf.find(r["id"])
         for h in img_ids(r["image_urls"]):
@@ -92,9 +142,27 @@ def main():
         ck = coord_key(r)
         if ck:
             by_coord[ck].append(r["id"])
-    for group in list(by_hash.values()) + list(by_addr.values()) + list(by_coord.values()):
+        pk = phone_key(r)
+        if pk:
+            by_phone[pk].append(r["id"])
+        aok = addr_only_key(r)
+        if aok:
+            by_addr_only[aok].append(r)
+        cok = coord_only_key(r)
+        if cok:
+            by_coord_only[cok].append(r)
+    # Exact-match keys: union the whole group.
+    for group in (list(by_hash.values()) + list(by_addr.values())
+                  + list(by_coord.values()) + list(by_phone.values())):
         for other in group[1:]:
             uf.union(group[0], other)
+    # Price-agnostic address/coord groups: union pairs whose prices are close (a
+    # relist of the SAME unit at a slightly changed rent) — folds a price-changed
+    # repost into the cluster of the post we may already have contacted.
+    for group in list(by_addr_only.values()) + list(by_coord_only.values()):
+        for a, b in combinations(group, 2):
+            if _price_close(a["price"], b["price"]):
+                uf.union(a["id"], b["id"])
 
     clusters = defaultdict(list)
     rowmap = {r["id"]: r for r in rows}

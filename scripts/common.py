@@ -26,6 +26,9 @@ CL_BASE = "https://sfbay.craigslist.org"
 # than apa alone: also includes sublets, rooms, office, parking, for-sale...).
 # We keep only real apartment/housing rentals via the category allow-list below.
 CL_SEARCH = CL_BASE + "/search/sfc/hhh"
+# East Bay subarea — used for the Berkeley BART-commute search (filtered to safe
+# near-BART Berkeley at discovery + by the area model). sfc = SF city, eby = East Bay.
+CL_SEARCH_EBY = CL_BASE + "/search/eby/hhh"
 
 # Craigslist post URLs encode the subcategory: .../sfc/<cat>/d/<slug>/<id>.html
 # We pull broadly and let subagents filter rooms/scams. We only BLOCK non-rental
@@ -68,8 +71,17 @@ def polite_sleep(cfg: dict) -> None:
 
 
 def post_id_from_url(url: str) -> str | None:
-    """Extract the numeric craigslist post id from a posting URL."""
+    """Extract the craigslist post id from a posting URL. Handles BOTH formats:
+    - legacy:  https://sfbay.craigslist.org/sfc/apa/d/<slug>/<digits>.html
+    - new static-search:  https://www.craigslist.org/view/d/<slug>/<alphanumeric-id>
+      (CL changed search-result URLs to this in 2026 — no category code, no .html,
+      and an alphanumeric id; the old parser returned None, silently dropping every
+      CL listing.)"""
     tail = url.rstrip("/").split("/")[-1]
     if tail.endswith(".html"):
         tail = tail[:-5]
-    return tail if tail.isdigit() else None
+    if tail.isdigit():
+        return tail
+    if "/view/d/" in url and re.fullmatch(r"[A-Za-z0-9]{8,}", tail):
+        return tail
+    return None
