@@ -150,6 +150,8 @@ def stage2_outreach(conn) -> list[str]:
     for r in rows:
         if r["status"] != "vetted" or (r["source"] or "") == "craigslist":
             continue
+        if (r["room_type"] or "") != "1br":   # contact ONLY 1 bed / 1 bath — no studios / 2+ bed
+            continue
         if (r["legit_label"] or "") == "likely-scam":
             continue
         if geo.classify(r["lat"], r["lng"], r["area"])["area_tier"] == "avoid":
@@ -159,7 +161,7 @@ def stage2_outreach(conn) -> list[str]:
         cand.append(r)
     cand.sort(key=lambda r: (-(r["fit_score"] or 0), -(r["legit_score"] or 0)))
     if cand:
-        blk = [f"\U0001F3E2 <b>Good picks to contact yourself (Zillow/Zumper/Apartments) - {len(cand)}</b>"]
+        blk = [f"\U0001F3E2 <b>1BR/1BA to contact yourself (Zillow/Zumper/Apartments) - {len(cand)}</b>"]
         for r in cand[:NONCONTACT_CAP]:
             rt = r["room_type"] or "?"
             blk.append(f"  • {_h((r['title'] or 'Listing')[:38])} — ${r['price']} "
