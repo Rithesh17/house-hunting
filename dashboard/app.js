@@ -127,10 +127,22 @@ function normalize(d) {
   return d;
 }
 
+/* Two broad regions only (no fine-grained sub-areas): East Bay (Berkeley) vs
+ * San Francisco. A listing is Berkeley if its area/neighborhood/address says so
+ * or its latitude is north of the SF/Oakland line (~37.84); else San Francisco. */
+const REGIONS = ["San Francisco", "Berkeley"];
+function regionOf(d) {
+  const txt = `${d.area || ""} ${d.neighborhood || ""} ${d.address || ""}`.toLowerCase();
+  if (txt.includes("berkeley")) return "Berkeley";
+  if (typeof d.lat === "number" && d.lat >= 37.84) return "Berkeley";
+  return "San Francisco";
+}
+
 function buildAreaMenu() {
-  const areas = [...new Set(LISTINGS
+  const present = new Set(LISTINGS
     .filter((d) => d.status !== "rejected" && d.status !== "removed")
-    .map((d) => d.area).filter(Boolean))].sort();
+    .map(regionOf));
+  const areas = REGIONS.filter((r) => present.has(r));
   const menu = document.getElementById("area-menu");
   menu.innerHTML = areas.map((a) =>
     `<label class="area-opt"><input type="checkbox" value="${esc(a)}"${SELECTED_AREAS.has(a) ? " checked" : ""}> ${esc(a)}</label>`
@@ -189,7 +201,7 @@ function selection() {
     if (f.minFit && (d.fit_score ?? 0) < f.minFit) return false;
     if (f.status && d.status !== f.status) return false;
     if (f.hideScams && d.legit_label === "likely-scam") return false;
-    if (SELECTED_AREAS.size && !SELECTED_AREAS.has(d.area)) return false;
+    if (SELECTED_AREAS.size && !SELECTED_AREAS.has(regionOf(d))) return false;
     return true;
   });
 
