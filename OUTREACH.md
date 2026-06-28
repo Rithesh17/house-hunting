@@ -113,10 +113,13 @@ for every good listing, not only the ones we auto-email — see CLAUDE.md step 4
 
 For each **new, qualifying** CL pick this run (see bar below) that is not yet
 `contacted`:
-1. **Relay** — it should already be on the row from Stage 1 (`reply_email`, and
-   `fetch_cl_contacts` also auto-reveals any in-body "click for contact" phone/email).
-   ONLY if it's still missing (CL throttled it that run) do a one-off `python3
-   scripts/fetch_cl_contacts.py <id>`; if chromerpc is unreachable, skip + log it.
+1. **Relay** — it MUST already be on the row from Stage 1 (`reply_email`, captured by
+   `fetch_cl_contacts --all-vetted`, which also auto-reveals any in-body "click for
+   contact" phone/email). **Stage 2 does NO gathering** — if a relay is still missing
+   (CL throttled it during Stage 1), SKIP that pick this run and just list it as
+   "relay pending"; it is re-fetched on the next Stage-1 contact pass. Never run
+   `fetch_cl_contacts` in Stage 2. (ALL information gathering — details, photos,
+   contact email/phone, for EVERY site — happens in Stage 1.)
 2. **Compose a human email** — read `sensitive/email_body.json` (NEVER committed),
    pick/adapt a template, inject the real post URL into `{post_url}`, and follow its
    `style_rules`: plain casual prose, NO em-dashes/emojis/semicolons, NO LLM-tells,

@@ -1,25 +1,18 @@
 """Discover SF + Berkeley rentals from Apartments.com via the LOCAL headful
-chromerpc browser. Inserts source='apartments' rows into the same DB, ready for
-the same subagent vetting + dedup + dashboard.
+chromerpc browser — HUMAN interaction only, NO page JavaScript (per THUMB_RULES).
 
-WHY chromerpc, headful: Apartments.com (CoStar) is behind Akamai. A HEADLESS
-browser sends a `HeadlessChrome` UA and gets an instant "Access Denied"; a HEADFUL
-Chrome with a normal UA passes (after a homepage warm-up that sets the _abck
-cookie). So this needs chromerpc started with `-headless=false` (refresh.py does).
-No-ops if chromerpc isn't reachable on :50051.
+Apartments.com (CoStar/Akamai) blocks headless instantly; a HEADFUL Chrome with a
+homepage warm-up (sets the _abck cookie) gets in. The search result page is fully
+SERVER-RENDERED: every listing is a `.placard` element with data-url /
+data-streetaddress / data-listingid attributes + visible price/beds/type/phone. So
+we read it JS-free: navigate -> read placards via the CDP DOM (QuerySelectorAll +
+GetAttributes + GetOuterHTML) and parse in Python. DROP "Room for Rent" placards.
+For each NEW non-room listing, open the detail page and read the #descriptionSection
+body + photos + phone + embedded lat/lng (else geocode) from the serialized HTML.
 
-HOW: warm up on the homepage, then navigate `/<region>/under-<cap>/` (+ paginated
-/N/). Read each placard's address/price/beds/type/phone straight off the card.
-DROP "Room for Rent" cards (Apartments.com labels shared rooms explicitly). For
-each remaining NEW listing, open the detail page and read the DESCRIPTION
-(#descriptionSection) + photos + phone + embedded lat/lng (else geocode the
-address). NO AUTO-MAP — store coords/price/url/photos/description + raw card
-fields in source_extra.raw; the vetting subagent authors the display fields.
-
-NOTE: Apartments.com lists managed BUILDINGS (not dated posts) and has no real
-"posted within 24h" — recency is approximate. Photo URLs (images1.apartments.com)
-sometimes resist direct download; we still store the remote URLs (the dashboard
-embeds those), and local copies are best-effort for the vetting step.
+NO Runtime.Evaluate anywhere. NO AUTO-MAP — store coords/price/url/photos/desc +
+raw card fields in source_extra.raw; the vetting subagent authors the display
+fields. Images are best-effort (the dashboard links to the original listing anyway).
 
     py scripts/fetch_apartments_cr.py
     py scripts/fetch_apartments_cr.py --region sf --max-detail 30
@@ -34,55 +27,34 @@ import time
 
 import common
 import db
-import fetch_detail  # download_images, geocode
+import fetch_detail            # download_images, geocode
+import fetch_cl_contacts as cr  # CDP DOM + human-input helpers (navigate, _qsa, _outer, _attrs, ...)
 
 REGIONS = {
-    "sf": {"slug": "san-francisco-ca", "meta_key": "last_pull_apartments", "label": "San Francisco"},
-    "berkeley": {"slug": "berkeley-ca", "meta_key": "last_pull_apartments_berkeley",
-                 "label": "Berkeley (East Bay)"},
+    "sf": {"slug": "san-francisco-ca", "city": "San Francisco, CA",
+           "meta_key": "last_pull_apartments", "label": "San Francisco"},
+    "berkeley": {"slug": "berkeley-ca", "city": "Berkeley, CA",
+                 "meta_key": "last_pull_apartments_berkeley", "label": "Berkeley (East Bay)"},
 }
 
-JS_CARDS = r"""
-(function(){
- return JSON.stringify([...document.querySelectorAll('.placard')].map(function(c){
-   return {id:c.getAttribute('data-listingid')||'', url:c.getAttribute('data-url')||'',
-           addr:c.getAttribute('data-streetaddress')||'',
-           txt:(c.innerText||'').replace(/\s+/g,' ').trim().slice(0,200)};
- }).filter(x=>x.url));
-})()
-"""
-
-JS_DETAIL = r"""
-(function(){
- var d=(document.querySelector('#descriptionSection, .descriptionText, [data-tab-content=description]')||{}).innerText||'';
- var imgs=[...new Set([...document.querySelectorAll('img')].map(i=>i.src).filter(s=>/images1\.apartments\.com\/i2\//.test(s)))];
- var lat=null,lng=null;
- var m=document.body.innerHTML.match(/"latitude":\s*"?(-?\d+\.\d+)"?[^}]{0,60}?"longitude":\s*"?(-?\d+\.\d+)"?/);
- if(m){lat=parseFloat(m[1]);lng=parseFloat(m[2]);}
- var body=document.body.innerText||'';
- var phone=(body.match(/\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}/)||[''])[0];
- return JSON.stringify({desc:d.slice(0,4000), imgs:imgs.slice(0,12), lat:lat, lng:lng, phone:phone});
-})()
-"""
-
 _TYPE_RE = re.compile(r"(Room for Rent|House for Rent|Condo for Rent|Townhome for Rent|Apartment for Rent|For Rent by Owner)", re.I)
+_PHONE = re.compile(r"\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}")
+_PRICE = re.compile(r"\$[\d,]+")
+_BEDS = re.compile(r"(Studio|\d+\s*Bed)", re.I)
+_IMG = re.compile(r"https://images1\.apartments\.com/i2/[^\s\"'\\)]+\.(?:jpg|jpeg|png|webp)[^\s\"'\\)]*", re.I)
+_LATLNG = re.compile(r'"latitude":\s*"?(-?\d+\.\d+)"?[^}]{0,80}?"longitude":\s*"?(-?\d+\.\d+)"?')
 
 
 def _chromerpc_ready() -> bool:
-    try:
-        import fetch_cl_contacts as cr
-        return "_err" not in cr._call("cdp.runtime.RuntimeService/Evaluate",
-                                      {"expression": "1", "return_by_value": True})
-    except Exception:
-        return False
+    return "_err" not in cr._call("cdp.dom.DOMService/GetDocument", {"depth": 0})
 
 
 def _card_fields(txt: str) -> dict:
     return {
-        "price": (re.search(r"\$[\d,]+", txt) or [None])[0] if re.search(r"\$[\d,]+", txt) else None,
-        "beds": (re.search(r"(Studio|\d+\s*Bed)", txt, re.I) or [None])[0] if re.search(r"(Studio|\d+\s*Bed)", txt, re.I) else None,
+        "price": (_PRICE.search(txt).group(0) if _PRICE.search(txt) else None),
+        "beds": (_BEDS.search(txt).group(0) if _BEDS.search(txt) else None),
         "type": (_TYPE_RE.search(txt).group(0) if _TYPE_RE.search(txt) else None),
-        "phone": (re.search(r"\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}", txt) or [None])[0] if re.search(r"\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}", txt) else None,
+        "phone": (_PHONE.search(txt).group(0) if _PHONE.search(txt) else None),
     }
 
 
@@ -91,45 +63,63 @@ def _price_int(s):
     return int(m.group(1).replace(",", "")) if m else None
 
 
-def collect_cards(cr, slug: str, cap: int, max_pages: int = 6) -> list[dict]:
+def collect_cards(slug: str, cap: int, max_pages: int = 6) -> list[dict]:
     base = f"https://www.apartments.com/{slug}/under-{cap}/"
     seen, out = {}, []
     for pg in range(1, max_pages + 1):
         cr.navigate(base if pg == 1 else f"{base}{pg}/")
         time.sleep(5)
-        title = cr.ev("document.title") or ""
-        if "Access Denied" in title or "denied" in title.lower():
+        ttl = cr._qs("title")
+        title = cr._node_text(ttl) if ttl else ""
+        if "denied" in title.lower():
             print(f"  ! page {pg}: Access Denied (need headful chromerpc + warm-up)", file=sys.stderr)
             break
-        items = cr.ev(JS_CARDS)
-        if not isinstance(items, list):
-            break
+        placards = cr._qsa(".placard")
         new = 0
-        for x in items:
-            if x["url"] not in seen:
-                seen[x["url"]] = 1
-                x.update(_card_fields(x.get("txt", "")))
-                out.append(x); new += 1
+        for nid in placards:
+            a = cr._attrs(nid)
+            url = a.get("data-url") or ""
+            if not url or url in seen:
+                continue
+            seen[url] = 1
+            txt = cr._node_text(nid)
+            out.append({"url": url, "id": a.get("data-listingid") or "",
+                        "addr": a.get("data-streetaddress") or "", **_card_fields(txt)})
+            new += 1
         if new == 0 and pg > 1:
             break
     return out
 
 
-def pull_region(conn, cfg, sess, cr, region_key: str, max_detail: int) -> int:
+def _detail(url: str) -> dict:
+    cr.navigate(url)
+    time.sleep(4)
+    html = cr._outer(cr._doc_root())
+    dnode = cr._qs("#descriptionSection") or cr._qs(".descriptionText") or cr._qs("[data-tab-content=description]")
+    desc = cr._node_text(dnode) if dnode else ""
+    imgs = list(dict.fromkeys(_IMG.findall(html)))[:12]
+    m = _LATLNG.search(html)
+    lat = float(m.group(1)) if m else None
+    lng = float(m.group(2)) if m else None
+    text = re.sub(r"<[^>]+>", " ", html)
+    pm = _PHONE.search(text)
+    return {"desc": desc, "imgs": imgs, "lat": lat, "lng": lng,
+            "phone": (pm.group(0) if pm else "")}
+
+
+def pull_region(conn, cfg, sess, region_key: str, max_detail: int) -> int:
     reg = REGIONS[region_key]
     cap = cfg["max_price"]
-    # Akamai warm-up: hit the homepage so the bot-manager cookie is set first.
-    cr.navigate("https://www.apartments.com/"); time.sleep(5)
+    cr.navigate("https://www.apartments.com/"); time.sleep(5)   # Akamai warm-up (_abck cookie)
     print(f"[apartments-cr] {reg['label']}: searching under ${cap} ...")
-    cards = collect_cards(cr, reg["slug"], cap)
+    cards = collect_cards(reg["slug"], cap)
     rooms = [c for c in cards if "room for rent" in (c.get("type") or "").lower()]
     cands = [c for c in cards if c not in rooms]
     print(f"  {len(cards)} card(s); dropped {len(rooms)} 'Room for Rent'; {len(cands)} candidate(s)")
 
     new = 0
     for c in cands:
-        url = c["url"]
-        pid = "apt" + (c.get("id") or __import__("hashlib").md5(url.encode()).hexdigest()[:12])
+        pid = "apt" + (c.get("id") or __import__("hashlib").md5(c["url"].encode()).hexdigest()[:12])
         if db.listing_exists(conn, pid) or db.is_blocked(conn, pid):
             continue
         if new >= max_detail:
@@ -138,18 +128,14 @@ def pull_region(conn, cfg, sess, cr, region_key: str, max_detail: int) -> int:
         price = _price_int(c.get("price"))
         if price and price > cap:
             continue
-        cr.navigate(url); time.sleep(4)
-        d = cr.ev(JS_DETAIL)
-        if not isinstance(d, dict):
-            d = {}
-        lat, lng = d.get("lat"), d.get("lng")
-        place = None
+        d = _detail(c["url"])
+        lat, lng, place = d.get("lat"), d.get("lng"), None
         if (lat is None or lng is None) and c.get("addr"):
-            geo = fetch_detail.geocode(sess, c["addr"] + ", San Francisco, CA"
-                                       if region_key == "sf" else c["addr"] + ", Berkeley, CA")
-            if geo:
-                lat, lng, place = geo
-        if not db.insert_stub(conn, post_id=pid, url=url,
+            g = fetch_detail.geocode(sess, f"{c['addr']}, {reg['city']}")
+            if g:
+                lat, lng, place = g
+            time.sleep(1)   # be kind to Nominatim
+        if not db.insert_stub(conn, post_id=pid, url=c["url"],
                               title=f"Apartments.com {pid} — vet for details", price=price,
                               room_type="unknown",
                               area=cfg.get("unspecified_area_name", "(unspecified SF)"),
@@ -181,7 +167,7 @@ def pull_region(conn, cfg, sess, cr, region_key: str, max_detail: int) -> int:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Pull Apartments.com rentals via headful chromerpc.")
+    ap = argparse.ArgumentParser(description="Pull Apartments.com rentals via headful chromerpc (JS-free).")
     ap.add_argument("--region", default="both", choices=["sf", "berkeley", "both"])
     ap.add_argument("--max-detail", type=int, default=40,
                     help="max NEW detail pages to fetch per region per run (default 40)")
@@ -192,16 +178,13 @@ def main() -> None:
         print("[apartments-cr] chromerpc not reachable on :50051 — skipping Apartments "
               "(start it headful: chromerpc -addr :50051 -headless=false).", file=sys.stderr)
         return
-    import fetch_cl_contacts as cr
-    cr._call("cdp.emulation.EmulationService/SetDeviceMetricsOverride",
-             {"width": 1366, "height": 900, "deviceScaleFactor": 1, "mobile": False})
 
     cfg = common.load_config()
     conn = db.connect()
     sess = common.session(cfg)
     total = 0
     for rk in regions:
-        total += pull_region(conn, cfg, sess, cr, rk, args.max_detail)
+        total += pull_region(conn, cfg, sess, rk, args.max_detail)
     conn.close()
     print(f"\n{total} new Apartments.com listing(s) added across {', '.join(regions)}.")
 
