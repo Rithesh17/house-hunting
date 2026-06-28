@@ -31,8 +31,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -47,9 +49,27 @@ import db
 
 GRPC = "localhost:50051"
 
+
+def _grpcurl_bin() -> str:
+    """Resolve the grpcurl executable. PATH first, then GRPCURL_BIN / GOPATH-bin
+    fallbacks (Windows subprocess doesn't always inherit a shell-mangled PATH)."""
+    g = shutil.which("grpcurl")
+    if g:
+        return g
+    for c in (os.getenv("GRPCURL_BIN"),
+              os.path.expandvars(r"%USERPROFILE%\go\bin\grpcurl.exe"),
+              os.path.expanduser("~/go/bin/grpcurl.exe"),
+              os.path.expanduser("~/go/bin/grpcurl")):
+        if c and os.path.exists(c):
+            return c
+    return "grpcurl"
+
+
+_GRPCURL = _grpcurl_bin()
+
 # ---- chromerpc raw-CDP helpers -------------------------------------------------
 def _call(method: str, payload: dict) -> dict:
-    cmd = ["grpcurl", "-plaintext", "-max-time", "40", "-d", json.dumps(payload), GRPC, method]
+    cmd = [_GRPCURL, "-plaintext", "-max-time", "40", "-d", json.dumps(payload), GRPC, method]
     r = subprocess.run(cmd, capture_output=True, text=True)
     try:
         return json.loads(r.stdout)

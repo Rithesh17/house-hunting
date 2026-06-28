@@ -5,16 +5,18 @@ quick path conflict, follow the rule. CLAUDE.md owns the *pipeline*; this owns t
 *guardrails*. Read this before any fetch / sync / external API call.
 
 ## 1. Don't abuse paid APIs (the money is real)
-- **Apify bills per result/event** — real money, drawn from the **$5/mo free credit
-  shared across all actors**. Keep usage minimal:
-  - **Zillow (`igolaizola/zillow-scraper-ppe`) at most ONCE per calendar day.**
-    `refresh.py` enforces this (skips Zillow if `last_pull_zillow` is today). Don't
-    pass `--force-zillow` casually — only when a pull genuinely failed.
-  - Always keep `--max-items` capped (default 40) **and** the recency filter on
-    (`timeOnZillow`, auto-derived from the last pull). Never do a full / no-recency
-    pull without a clear reason — and say so first.
-  - **Craigslist + Zumper are free** (our own scrapers) — run those any time, even
-    multiple times a day. Only **Zillow** is rate-limited for cost.
+- **All four sources are now FREE** (our own scrapers): Craigslist + Zumper over
+  HTTP, Zillow + Apartments.com via the LOCAL headful **chromerpc** browser
+  (`fetch_zillow_cr.py` / `fetch_apartments_cr.py`). Run any of them any time. The
+  paid Apify Zillow actor (`fetch_zillow.py`) is RETIRED from the default flow —
+  keep it only as a manual fallback; don't call it without a clear reason (it bills
+  per result against the $5/mo credit).
+- **Be polite to the bot-walled sites (Zillow PerimeterX, Apartments Akamai).**
+  chromerpc MUST run headful (`-headless=false`) or they hard-block; and even then,
+  pace like a human — the adapters warm up on the homepage, page through modestly,
+  and cap new detail fetches per run (`--max-detail`). Don't loop aggressively or
+  you'll re-trigger the captcha wall. Per-run dedup + blocklist mean steady-state
+  runs only fetch genuinely-new listings.
 - **Confirm an actor's output is REAL before trusting it or quoting its cost.**
   `epctex/apartments-scraper-api` returns `{"demo": true}` placeholders **and still
   bills** — we abandoned it. Inspect a couple of items' *content*, not just counts.

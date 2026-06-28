@@ -116,52 +116,52 @@ Craigslist,"* *"any new places today?"* — run the pipeline below end to end.
   starts it). If chromerpc is down it falls back to the old Playwright path
   (`DescriptionFetcher`, usually a no-op here) → `description=None`; pipeline
   still runs but room-shares can't be caught from the body that run.
-- **Zillow** (`scripts/fetch_zillow.py`) — Zillow hard-blocks scraping (PerimeterX),
-  so we go through the **Apify `igolaizola/zillow-scraper-ppe` actor** (it runs
-  Zillow's own rental search behind residential proxies). We query by location +
-  filters: `operation=rent`, `location="San Francisco, CA"`, `space=entirePlace`
-  (excludes room-shares at the query level), `maxPrice=<cap>` (verified MONTHLY, not
-  weekly), `sortBy=newest`, and map each listing to `source='zillow'` rows (skipping
-  null-price "building cards"). Needs `APIFY_TOKEN` in `.env`. **Pay-per-event**:
-  Actor Start $0.0005/run + Result $0.0009/listing (incl. photos) + Fetch Detail
-  $0.002/listing (only when `fetchDetails=true`; ~$0.0029 all-in). The cost lever is
-  how many listings return, so we DERIVE `timeOnZillow` (Zillow's "listed within the
-  last N" recency filter; buckets 1d/1w/2w/1m/3m/…) from how long ago we last pulled
-  (`last_pull_zillow`) and snap UP to the smallest covering bucket — a daily run asks
-  Zillow for just the last day. (Use `timeOnZillow`, NOT `minTimeOnZillow`, which is
-  the at-least-N-old filter.) Capped per run (`--max-items`, default 40) + a
-  `maxTotalChargeUsd` safety ceiling. The actor is location/filter-based (no per-id
-  detail fetch), so `fetchDetails` is all-or-nothing per run; with once-per-refresh
-  cadence the recency window ≈ the new listings, so we pay details essentially only
-  for genuinely-new units, and dedup + blocklist still ensure nothing seen is
-  re-stored/re-vetted. Unlike the old actor, this returns **many photos + the full
-  description** (`fetchDetails`), so share-vs-unit IS verifiable from the photos +
-  body — the SHARED-ROOM GATE applies to Zillow rows just like Craigslist. Each item
-  also carries `listingDateTimeOnZillow` (exact posted time) for `posted_at`. We use
-  the structured `address` directly (not parsed from text), fall back to the
-  `_details` lat/lng so **undisclosed-address listings still get area-classified**
-  (else they'd default to `ok`), and capture extra signals into `source_extra`
-  (→ research bundle `source_signals`): Zillow's own `isRoomForRent`/`isRentByBed`
-  room flags, `rentZestimate` (free per-unit market rent), `parcelNumber`,
-  `listedBy` (agent/brokerage), and `priceHistory`. `--no-details` skips bodies
-  (cheaper). Replaced the old `maxcopell/zillow-scraper` (1 photo, no body, $0.002/result).
-Both feed the SAME downstream (vetting, dedup, dashboard). `tools/dedup.py` merges
-the same unit ACROSS sources (by shared image id, address, OR rounded coords +
+- **Zillow** (`scripts/fetch_zillow_cr.py`) — Zillow hard-blocks scraping
+  (PerimeterX), but a LOCAL **headful chromerpc** Chrome with a normal UA passes it
+  (headless / the `HeadlessChrome` UA is instantly walled). So we drive the real
+  browser: navigate the rentals search with a `searchQueryState` URL (region map
+  bounds + `mp.max=<cap>` price cap + `sort=days` newest), parse the page's embedded
+  `listResults` JSON (every card: price/beds/baths/sqft/address/detailUrl/recency/
+  lat-lng), enforce `<= cap` (building cards leak units over the cap), then open each
+  NEW listing's detail page and read the **description FROM THE DOM**
+  (`[data-testid=description]` — Zillow omits the body from `__NEXT_DATA__` for
+  `/homedetails/`; SEO/building boilerplate is filtered to None) + photos + contact.
+  FREE (no Apify), runs every refresh; `--region {sf,berkeley,both}`, `--max-detail`
+  caps new detail fetches/run. SHARED-ROOM GATE applies (1801 Franklin proved
+  photos+bedcount alone is NOT enough — the body said "room in a 2BR"). Stores coords
+  (area model) + price + url + photos + description + raw card fields in
+  `source_extra.raw`; NO AUTO-MAP (the subagent authors display fields).
+  *(`scripts/fetch_zillow.py` = the RETIRED paid Apify actor `igolaizola/
+  zillow-scraper-ppe`; kept only as a manual fallback, not in the default flow.)*
+- **Apartments.com** (`scripts/fetch_apartments_cr.py`) — also bot-walled (Akamai;
+  headless `HeadlessChrome` UA = instant "Access Denied"). Headful chromerpc + a
+  homepage warm-up (sets the `_abck` cookie) gets in. Navigate `/<region>/under-<cap>/`
+  (+ paginated), read each placard's address/price/beds/**type**/phone off the card,
+  DROP "Room for Rent" cards (Apartments labels shared rooms explicitly), then open
+  each NEW non-room listing for the `#descriptionSection` body + photos + phone +
+  embedded lat/lng (else geocode). NOTE: Apartments lists managed BUILDINGS, has no
+  real "posted in 24h", and its cheap SF inventory is mostly rooms/SROs/BMR — expect
+  few keeps. `source='apartments'`. NO AUTO-MAP.
+All four sources feed the SAME downstream (vetting, dedup, dashboard). `tools/dedup.py`
+merges the same unit ACROSS sources (by shared image id, address, OR rounded coords +
 price + room_type) into one tile; the dossier lists each source's link.
 
 ## Refresh — the one command (when the user says "refresh" / "fetch latest")
 This is the full cycle. Run it end to end:
 1. `py scripts/refresh.py` — does the deterministic plumbing incrementally:
-   **hydrate local DB from Supabase** + Craigslist pull + Zumper pull +
-   **Zillow pull (ONCE/DAY only — auto-skipped if `last_pull_zillow` is today;
-   `--force-zillow` to override, `--no-zillow` to skip)** +
-   detail/photos/gates + prune dead links + dedupe + **Stage-2 research bundles**
-   (`scripts/research.py --all-new` → `data/research/<id>.json`). It prints how
-   many NEW listings need vetting AND which market buckets need a web lookup.
+   **launch headful chromerpc (auto)** + **hydrate local DB from Supabase** +
+   Craigslist pull + Zumper pull + **Zillow pull** + **Apartments.com pull** (Zillow
+   & Apartments via the headful chromerpc browser — both FREE now, run every refresh;
+   `--no-zillow` / `--no-apartments` to skip, `--no-browser` to not auto-launch
+   chromerpc) + detail/photos/gates + prune dead links + dedupe + **Stage-2 research
+   bundles** (`scripts/research.py --all-new` → `data/research/<id>.json`). It prints
+   how many NEW listings need vetting AND which market buckets need a web lookup.
+   refresh.py auto-launches chromerpc headful if it's not already on :50051 (set
+   `CHROMERPC_BIN` / `CHROME_BIN` in `.env` so it can find the binaries); headful is
+   REQUIRED — Zillow (PerimeterX) and Apartments (Akamai) hard-block headless.
    **A launchd cron runs this full cycle every 4 hours** (01/05/09/13/17/21) via
-   headless Claude — the day's first run pulls all sources incl. Zillow; the other
-   five do Craigslist + Zumper only (Zillow gated once/day, free sources refresh
-   often). Those runs use `notify.py --new --quiet-if-empty` so only real new picks
+   headless Claude — every run pulls all four free sources. Those runs use
+   `notify.py --new --quiet-if-empty` so only real new picks
    ping Telegram (no repeated "nothing new" notes). See THUMB_RULES.md. The
    hydrate step (`scripts/hydrate_from_supabase.py`) pulls the cloud read-model
    back into local SQLite so a fresh checkout resumes WITHOUT re-vetting everything
@@ -485,8 +485,11 @@ NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
 ## Scripts
 - `scripts/fetch_listings.py` — multi-pass discovery → DB stubs.
 - `scripts/fetch_detail.py` — parse post + download photos (+ phone/email/DRE#).
-- `scripts/fetch_zillow.py` — pull SF rentals from Zillow via the Apify
-  `maxcopell/zillow-scraper` actor (needs `APIFY_TOKEN`); `source='zillow'` rows.
+- `scripts/fetch_zillow_cr.py` — pull SF + Berkeley Zillow rentals via headful
+  chromerpc (FREE; default). `source='zillow'` rows; reads description from the DOM.
+- `scripts/fetch_apartments_cr.py` — pull SF + Berkeley Apartments.com via headful
+  chromerpc (FREE; drops "Room for Rent" cards). `source='apartments'` rows.
+- `scripts/fetch_zillow.py` — RETIRED paid Apify Zillow actor; manual fallback only.
 - `scripts/research.py` — Stage-2: assemble `data/research/<id>.json` (DRE + owner
   + market range + duplicate siblings) for the vetting subagent to cross-check.
 - `scripts/verify_dre.py` — look up a CA DRE license (name/status/broker/discipline)
