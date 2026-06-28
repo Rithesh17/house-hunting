@@ -182,7 +182,12 @@ body {
 
 /* source tag on tile + in source list */
 .srctag { font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
-  color: var(--ink-soft); border: 1px solid var(--rule); padding: 1px 6px; margin-left: 4px; }
+  color: var(--ink-soft); border: 1px solid var(--rule); padding: 1px 6px; margin-left: 4px;
+  white-space: nowrap; }
+.srctag.src-craigslist { border-color: #7d5ba6; color: #6a4a91; }
+.srctag.src-zillow     { border-color: #1277e1; color: #1268c4; }
+.srctag.src-zumper     { border-color: #e8553f; color: #c8462f; }
+.srctag.src-apartments { border-color: #2f7d4f; color: #2a6e46; }
 .srcsite { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
   color: var(--paper); background: var(--ink); padding: 2px 7px; }
 

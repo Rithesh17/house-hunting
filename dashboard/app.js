@@ -36,9 +36,18 @@ const TYPE = {
 };
 function typeOf(d) { return TYPE[d.room_type] || TYPE.unknown; }
 const TEMOJI = { "likely-legit": "🟢", "unverified-amateur": "🟡", "likely-scam": "🔴" };
-const SOURCE = { craigslist: "Craigslist", zumper: "Zumper" };
+const SOURCE = { craigslist: "Craigslist", zumper: "Zumper", zillow: "Zillow", apartments: "Apartments" };
+const SOURCE_ORDER = ["craigslist", "zumper", "zillow", "apartments"];
 function sourceLabel(s) { return SOURCE[s] || (s ? s[0].toUpperCase() + s.slice(1) : "Listing"); }
+/* Every distinct source a unit appears on (primary + folded cross-source dups). */
+function sourcesOf(d) {
+  const set = new Set();
+  if (d.source) set.add(d.source);
+  (Array.isArray(d.sources) ? d.sources : []).forEach((s) => { if (s.source) set.add(s.source); });
+  return [...set];
+}
 let SELECTED_AREAS = new Set();
+let SELECTED_SOURCES = new Set();
 
 /* ----------------------------------------------------------- search state */
 // ONE search box, two purely text-based signals (both instant, no network/model):
@@ -112,6 +121,7 @@ async function load() {
       `<p class="empty">Couldn't reach the listings service. Try again shortly.</p>`;
   }
   buildAreaMenu();
+  buildSourceMenu();
   render();
   openFromHash();
 }
@@ -164,6 +174,33 @@ function updateAreaBtn() {
     (n ? `${n} area${n > 1 ? "s" : ""}` : "All areas") + " ▾";
 }
 
+function buildSourceMenu() {
+  const present = new Set(LISTINGS
+    .filter((d) => d.status !== "rejected" && d.status !== "removed")
+    .flatMap(sourcesOf));
+  const sources = SOURCE_ORDER.filter((s) => present.has(s));
+  const menu = document.getElementById("source-menu");
+  if (!menu) return;
+  menu.innerHTML = sources.map((s) =>
+    `<label class="area-opt"><input type="checkbox" value="${esc(s)}"${SELECTED_SOURCES.has(s) ? " checked" : ""}> ${esc(sourceLabel(s))}</label>`
+  ).join("") + `<button type="button" id="source-clear" class="area-clear">Clear all</button>`;
+  menu.querySelectorAll("input[type=checkbox]").forEach((cb) =>
+    cb.addEventListener("change", () => {
+      cb.checked ? SELECTED_SOURCES.add(cb.value) : SELECTED_SOURCES.delete(cb.value);
+      updateSourceBtn(); PAGE = 1; render();
+    }));
+  document.getElementById("source-clear").addEventListener("click", () => {
+    SELECTED_SOURCES.clear();
+    menu.querySelectorAll("input[type=checkbox]").forEach((cb) => (cb.checked = false));
+    updateSourceBtn(); PAGE = 1; render();
+  });
+}
+function updateSourceBtn() {
+  const n = SELECTED_SOURCES.size;
+  document.getElementById("source-btn").textContent =
+    (n ? `${n} source${n > 1 ? "s" : ""}` : "All sources") + " ▾";
+}
+
 function filters() {
   return {
     sort: val("sort"), type: val("filter-type"),
@@ -202,6 +239,7 @@ function selection() {
     if (f.status && d.status !== f.status) return false;
     if (f.hideScams && d.legit_label === "likely-scam") return false;
     if (SELECTED_AREAS.size && !SELECTED_AREAS.has(regionOf(d))) return false;
+    if (SELECTED_SOURCES.size && !sourcesOf(d).some((s) => SELECTED_SOURCES.has(s))) return false;
     return true;
   });
 
@@ -320,7 +358,7 @@ function renderList(items) {
         <div class="hood">${esc(d.area || d.neighborhood || "San Francisco")}
           ${isAvoid(d) ? `<span class="prox avoid">unsafe area</span>`
             : isCaution(d) ? `<span class="prox caution">secondary area</span>` : ""}
-          <span class="srctag">${sourceLabel(d.source)}${d.dup_count > 1 ? " +" + (d.dup_count - 1) : ""}</span></div>
+          ${sourcesOf(d).map((s) => `<span class="srctag src-${esc(s)}">${esc(sourceLabel(s))}</span>`).join("")}</div>
         <div class="specs">
           ${specs.map((s) => `<span class="chip">${esc(s)}</span>`).join("")}
           ${d.dup_count > 1 ? `<span class="chip dup">${d.dup_count} posts</span>` : ""}
@@ -612,6 +650,17 @@ function init() {
     const menu = document.getElementById("area-menu");
     if (menu && !menu.contains(e.target) && e.target !== areaBtn) menu.classList.add("hidden");
   });
+  const sourceBtn = document.getElementById("source-btn");
+  if (sourceBtn) {
+    sourceBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      document.getElementById("source-menu").classList.toggle("hidden");
+    });
+    document.addEventListener("click", (e) => {
+      const menu = document.getElementById("source-menu");
+      if (menu && !menu.contains(e.target) && e.target !== sourceBtn) menu.classList.add("hidden");
+    });
+  }
   document.getElementById("modal-close").addEventListener("click", closeModal);
   document.getElementById("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
