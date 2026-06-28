@@ -143,11 +143,12 @@ def stage2_outreach(conn) -> list[str]:
                     f"— <a href=\"{_h(r['url'])}\">CL post</a>")
     out.append("\n".join(head))
 
-    # Good listings we can't email directly (no reply relay; e.g. Zumper) - chase by hand.
+    # Good picks from the OTHER sources (Zillow / Zumper / Apartments) — we don't
+    # auto-email those (no CL relay), so surface them for the user to contact by hand.
     cfg = common.load_config()
     cand = []
     for r in rows:
-        if r["status"] != "vetted" or r["reply_email"]:
+        if r["status"] != "vetted" or (r["source"] or "") == "craigslist":
             continue
         if (r["legit_label"] or "") == "likely-scam":
             continue
@@ -158,7 +159,7 @@ def stage2_outreach(conn) -> list[str]:
         cand.append(r)
     cand.sort(key=lambda r: (-(r["fit_score"] or 0), -(r["legit_score"] or 0)))
     if cand:
-        blk = [f"\U0001F3E2 <b>Good picks we can't email yet (Zumper/other) - {len(cand)}</b>"]
+        blk = [f"\U0001F3E2 <b>Good picks to contact yourself (Zillow/Zumper/Apartments) - {len(cand)}</b>"]
         for r in cand[:NONCONTACT_CAP]:
             rt = r["room_type"] or "?"
             blk.append(f"  • {_h((r['title'] or 'Listing')[:38])} — ${r['price']} "
