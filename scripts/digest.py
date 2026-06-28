@@ -131,7 +131,7 @@ def stage1_stats(conn) -> list[str]:
     return ["\n".join(lines)]
 
 
-def stage2_outreach(conn) -> list[str]:
+def stage2_outreach(conn, picked: list) -> list[str]:
     rows = conn.execute(
         "SELECT * FROM listings WHERE status NOT IN ('rejected','removed')").fetchall()
     contacted = [r for r in rows if r["status"] == "contacted"]
@@ -143,12 +143,15 @@ def stage2_outreach(conn) -> list[str]:
                     f"— <a href=\"{_h(r['url'])}\">CL post</a>")
     out.append("\n".join(head))
 
-    # Good picks from the OTHER sources (Zillow / Zumper / Apartments) — we don't
-    # auto-email those (no CL relay), so surface them for the user to contact by hand.
-    cfg = common.load_config()
+    # NEW good 1BR/1BA picks from the OTHER sources (Zillow / Zumper / Apartments) —
+    # we don't auto-email those (no CL relay), so surface them for manual contact.
+    # ONLY un-notified ones (notified=0) so each digest shows just the LATEST picks,
+    # not the whole accumulated dashboard; they're marked notified after a send.
     cand = []
     for r in rows:
         if r["status"] != "vetted" or (r["source"] or "") == "craigslist":
+            continue
+        if r["notified"]:                     # already sent in a prior digest
             continue
         if (r["room_type"] or "") != "1br":   # contact ONLY 1 bed / 1 bath — no studios / 2+ bed
             continue
@@ -160,22 +163,26 @@ def stage2_outreach(conn) -> list[str]:
             continue
         cand.append(r)
     cand.sort(key=lambda r: (-(r["fit_score"] or 0), -(r["legit_score"] or 0)))
+    picked.extend(r["id"] for r in cand)      # mark ALL of these notified after send
     if cand:
-        blk = [f"\U0001F3E2 <b>1BR/1BA to contact yourself (Zillow/Zumper/Apartments) - {len(cand)}</b>"]
+        blk = [f"\U0001F3E2 <b>New 1BR/1BA to contact yourself (Zillow/Zumper/Apartments) - {len(cand)}</b>"]
         for r in cand[:NONCONTACT_CAP]:
-            rt = r["room_type"] or "?"
             blk.append(f"  • {_h((r['title'] or 'Listing')[:38])} — ${r['price']} "
-                       f"{_h(rt)} ({_region(r)}) — <a href=\"{_h(r['url'])}\">link</a>")
+                       f"1br ({_region(r)}) — <a href=\"{_h(r['url'])}\">link</a>")
         if len(cand) > NONCONTACT_CAP:
             blk.append(f"  … +{len(cand)-NONCONTACT_CAP} more on the dashboard")
         out.append("\n".join(blk))
     return out
 
 
-def compose() -> list[str]:
+def compose():
+    """Returns (messages, picked_ids). picked_ids = the NEW non-CL 1BR picks listed
+    in Stage 2; main() marks them notified after a successful send so they don't
+    repeat in future digests."""
     conn = db.connect()
+    picked: list = []
     header = "\U0001F3E0 <b>SF / Berkeley House-Hunt - digest</b>"
-    sections = stage0_visits(conn) + stage1_stats(conn) + stage2_outreach(conn)
+    sections = stage0_visits(conn) + stage1_stats(conn) + stage2_outreach(conn, picked)
     footer = f"\U0001F5FA Full ledger: {_h(DASHBOARD_URL)}"
     conn.close()
     # pack into <=3900-char messages (Telegram cap 4096)
@@ -188,20 +195,28 @@ def compose() -> list[str]:
             cur.append(s)
             n += len(s) + 2
     msgs.append("\n\n".join(cur))
-    return msgs
+    return msgs, picked
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Send the combined 3-stage house-hunt digest.")
     ap.add_argument("--send", action="store_true", help="actually send (default: print only)")
     args = ap.parse_args()
-    messages = compose()
+    messages, picked = compose()
     if not args.send:
         print("\n\n===== MESSAGE BREAK =====\n\n".join(messages))
-        print(f"\n[dry-run] {len(messages)} message(s); pass --send to deliver.")
+        print(f"\n[dry-run] {len(messages)} message(s); {len(picked)} new pick(s) "
+              "would be marked notified on send.")
         return
     ok = all(notify.send_text(m) for m in messages)
-    print(f"Sent {len(messages)} message(s)." if ok else "Send failed.")
+    if ok and picked:
+        conn = db.connect()
+        for pid in picked:
+            db.mark_notified(conn, pid)
+        conn.commit()
+        conn.close()
+    print(f"Sent {len(messages)} message(s); marked {len(picked) if ok else 0} pick(s) notified."
+          if ok else "Send failed.")
 
 
 if __name__ == "__main__":
