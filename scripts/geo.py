@@ -83,41 +83,40 @@ def nearest_bart(lat, lng) -> dict | None:
     return {"station": name, "km": round(d, 2)}
 
 
-# ---- East Bay / Berkeley (BART-commute option) --------------------------------
-# Berkeley city only (no Oakland, per the user). FIRST-LEVEL is broad: any Berkeley
-# coord near a Berkeley BART stop is `ok`; SAFETY is handled here like the SF unsafe
-# zones — Oakland (south of the city line) and the South-Berkeley / Ashby flatlands
-# (the genuinely less-safe pocket) are `avoid`, the way the Tenderloin is in SF.
-_BERKELEY_BART = [(37.873967, -122.283440),   # North Berkeley BART
-                  (37.870104, -122.268133),   # Downtown Berkeley BART
-                  (37.852803, -122.270062)]   # Ashby BART (official gtfs coords)
-_BERKELEY_NEAR_KM = 1.6        # broad walk/short-roll to a Berkeley station
+# ---- East Bay / Berkeley (crime-zone model, like SF) ---------------------------
+# Berkeley city only (no Oakland, per the user). SAFETY is now DECOUPLED from BART
+# distance: a Berkeley coord is classified by CRIME ZONES (config.yaml `berkeley:`,
+# encoded from the NeighborhoodScout Berkeley map + Berkeley PD) exactly like SF —
+# west/south flats = avoid/caution, the hills + North Berkeley + Elmwood + Westbrae
+# + Albany = ok. Oakland (south of the city line) is still excluded. BART proximity
+# is a separate FIT signal (nearest_bart()), NOT a safety gate.
 _OAKLAND_LINE_LAT = 37.846     # Alcatraz Ave — south of this is Oakland (excluded)
 _EASTBAY_LNG = -122.34         # coords east of this are across the bay (not SF)
-# South Berkeley / Ashby flatlands — the less-safe pocket, treated `avoid` like the
-# Tenderloin (still gets a BART-distance, but excluded from picks). Centered on Ashby.
-_SOUTH_BERK_UNSAFE = (37.852803, -122.270062, 0.85)  # (lat, lng, radius_km)
+
+
+def _berkeley_cfg() -> dict:
+    if "berkeley" not in _cfg_cache:
+        _cfg_cache["berkeley"] = common.load_config().get("berkeley", {}) or {}
+    return _cfg_cache["berkeley"]
 
 
 def _eastbay_tier(lat, lng) -> dict | None:
-    """Classify an East Bay coordinate. None when not east of the bay (SF falls
-    through to SF logic). Else: Oakland (south of the city line) and the South-
-    Berkeley unsafe pocket are `avoid`; a Berkeley coord near any Berkeley BART stop
-    is `ok`; anything far from a station is `avoid` (not a BART-commute fit)."""
+    """Classify an East Bay coordinate by CRIME ZONES (not BART distance). None when
+    not east of the bay (SF falls through to SF logic). Oakland (south of the city
+    line) -> avoid; else Berkeley unsafe_zones -> avoid, caution_zones -> caution,
+    otherwise -> ok (safe Berkeley)."""
     if lat is None or lng is None or lng <= _EASTBAY_LNG:
         return None
-    if lat < _OAKLAND_LINE_LAT:                       # Oakland — excluded
+    if lat < _OAKLAND_LINE_LAT:                       # Oakland — excluded per the user
         return {"area_tier": "avoid", "area_name": "Oakland (excluded)", "unsafe": True}
-    sla, sln, srad = _SOUTH_BERK_UNSAFE
-    if haversine_km(lat, lng, sla, sln) <= srad:      # South Berkeley / Ashby flats
-        return {"area_tier": "avoid",
-                "area_name": "South Berkeley / Ashby (less safe)", "unsafe": True}
-    near = min((haversine_km(lat, lng, bla, bln) for bla, bln in _BERKELEY_BART),
-               default=99.0)
-    if near <= _BERKELEY_NEAR_KM:
-        return {"area_tier": "ok", "area_name": "Berkeley (near BART)", "unsafe": False}
-    return {"area_tier": "avoid",
-            "area_name": "East Bay (not near a Berkeley BART stop)", "unsafe": True}
+    bcfg = _berkeley_cfg()
+    for z in bcfg.get("unsafe_zones", []):
+        if haversine_km(lat, lng, z["lat"], z["lng"]) <= z.get("radius_km", 0.8):
+            return {"area_tier": "avoid", "area_name": z["name"], "unsafe": True}
+    for z in bcfg.get("caution_zones", []):
+        if haversine_km(lat, lng, z["lat"], z["lng"]) <= z.get("radius_km", 0.6):
+            return {"area_tier": "caution", "area_name": z["name"], "unsafe": False}
+    return {"area_tier": "ok", "area_name": "Berkeley", "unsafe": False}
 
 
 def _name_hit(text: str | None, cfg: dict) -> str | None:

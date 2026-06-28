@@ -132,6 +132,19 @@ caution:
     - { name: "Eastern SoMa waterfront",         lat: 37.7855, lng: -122.3925, radius_km: 0.75 }
     - { name: "Visitacion Valley (residential)", lat: 37.7135, lng: -122.4040, radius_km: 0.55 }
 
+# Berkeley / East Bay crime model — coordinate ZONES, the same approach as SF (NOT a
+# BART-distance proxy). Encoded from the NeighborhoodScout Berkeley crime map +
+# Berkeley PD geography: the west + south flats run higher-crime; the hills, North
+# Berkeley, Northside, Elmwood, Westbrae and Albany are safe. Oakland (south of the
+# city line, ~37.846) is excluded per the user (handled in geo.py). BART proximity is
+# a FIT/convenience signal (geo.nearest_bart) — it is NOT a safety gate anymore.
+berkeley:
+  unsafe_zones:
+    - { name: "South Berkeley flats (Ashby/Adeline/Sacramento)", lat: 37.8500, lng: -122.2720, radius_km: 0.90 }
+  caution_zones:
+    - { name: "West Berkeley (San Pablo corridor)",  lat: 37.8680, lng: -122.2950, radius_km: 0.80 }
+    - { name: "People's Park / lower Telegraph",     lat: 37.8655, lng: -122.2590, radius_km: 0.35 }
+
 # PULL PHILOSOPHY: pull broadly (almost all of SF, price-capped, no office/parking),
 # then let SUBAGENTS manually read each post and filter rooms / tag scams / judge
 # fit. We do NOT script-filter rooms or scams — only two objective, no-false-
