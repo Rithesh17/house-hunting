@@ -6,7 +6,7 @@ Usage:
     py scripts/db.py init                 # create the database
     py scripts/db.py list [--status new]  # list listings (compact)
     py scripts/db.py show <id>            # full row as JSON
-    py scripts/db.py set-status <id> <s>  # new|vetted|interested|contacted|rejected
+    py scripts/db.py set-status <id> <s>  # new|vetted|contacted|interested|visited|rejected
     py scripts/db.py reset-seen           # (debug) wipe everything
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ DB_PATH = os.environ.get("HOUSEHUNT_DB") or os.path.join(DATA_DIR, "listings.db"
 # Transient Stage-2 research bundles (one JSON per listing), like data/images/.
 RESEARCH_DIR = os.path.join(DATA_DIR, "research")
 
-STATUSES = ("new", "vetted", "interested", "contacted", "rejected", "removed")
+STATUSES = ("new", "vetted", "contacted", "interested", "visited", "rejected", "removed")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS listings (
