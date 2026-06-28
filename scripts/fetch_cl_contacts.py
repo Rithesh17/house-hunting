@@ -1,34 +1,33 @@
 """Fetch Craigslist reply-contact details (relay email + phone) for listings, via
-the LOCAL chromerpc service using raw CDP + human-like mouse movement.
+the LOCAL chromerpc service — HUMAN interaction only, NO page JavaScript.
 
-Craigslist hides contact behind the JS 'reply' button, so we drive a real browser:
-navigate -> human-Bezier-click 'reply' -> enumerate the reply-option-header buttons
-from the DOM -> human-click each -> read the revealed mailto / tel. Coordinates come
-from the DOM bbox (the buttons shift with viewport width, so fixed pixels don't work),
-but the CLICK is a human-like Bezier move + press/release. The reply panel loads
-ASYNC so we poll for it. Results are stored on the listing row (reply_email + phone).
+Per THUMB_RULES: we never execute page scripts (Runtime.Evaluate). We drive the
+browser like a person — real Input mouse moves/clicks (human Bézier paths) and
+wheel scrolling — and we LOCATE elements + READ content through the CDP DOM domain
+(GetDocument -> QuerySelector(All) -> GetBoxModel for click coords; GetOuterHTML /
+GetAttributes to read), parsing the HTML in Python. Craigslist hides contact behind
+the JS 'reply' button, so: navigate -> human-click 'reply' -> enumerate the
+reply-option-header buttons -> human-click each -> read the revealed mailto/tel.
+The reply panel loads ASYNC so we poll. Results are stored on the listing row.
 
-ALSO handles the OTHER pattern: some posts hide a phone/email in the BODY behind a
-'click to reveal contact' / blocked section (unstructured, varies per post). After
-the reply panel, reveal_in_body() scans the posting body for a clickable reveal
-trigger, human-clicks it, waits a couple seconds, and reads the number that appears.
-Best-effort and self-skipping (no trigger found -> no clicks), so it's safe to always
-run; it only acts when the body actually gates the contact behind a click.
+ALSO handles the in-body 'click to reveal contact' pattern: some posts hide a
+phone/email in the body behind a clickable trigger; reveal_in_body() finds it (by
+its visible text), human-clicks it, and reads what surfaces.
 
 IMPORTANT: ONE pass per listing. Craigslist throttles repeated reply requests from
-one IP — re-hitting a listing makes it drop the 'call' option or block reply. So we
-skip listings already fetched (unless --force) and space requests out.
+one IP. We skip already-fetched listings (unless --force) and space requests out.
 
-Prereq — run chromerpc locally first (headless is fine):
-    cd chromerpc && ./bin/chromerpc -headless -addr :50051 &
+Prereq — run chromerpc locally first (HEADFUL recommended):
+    cd chromerpc && ./bin/chromerpc -headless=false -addr :50051 &
 
-    python3 scripts/fetch_cl_contacts.py --all-vetted        # all vetted CL, unfetched
-    python3 scripts/fetch_cl_contacts.py 7942959383 7942...  # specific ids
+    python3 scripts/fetch_cl_contacts.py --all-vetted
+    python3 scripts/fetch_cl_contacts.py 7942959383 7942...
     python3 scripts/fetch_cl_contacts.py --all-vetted --force --delay 15
 """
 from __future__ import annotations
 
 import argparse
+import html as _html
 import json
 import math
 import os
@@ -41,8 +40,7 @@ import time
 
 # contact_details is ONLY worth storing when there's a special step beyond the bare
 # number — a masked-relay extension/code ("x 46", "ext 7852", "text 46 to ..."). A
-# plain number lives in `phone`; anything else captured (marketing sentences, the
-# post body) is noise and must NOT be stored.
+# plain number lives in `phone`; anything else captured is noise and must NOT be stored.
 _EXT_RE = re.compile(r"\b(?:ext\.?|x)\s*\d{1,5}\b|\btext\s+\d{1,5}\s+to\b", re.I)
 
 import db
@@ -67,6 +65,7 @@ def _grpcurl_bin() -> str:
 
 _GRPCURL = _grpcurl_bin()
 
+
 # ---- chromerpc raw-CDP helpers -------------------------------------------------
 def _call(method: str, payload: dict) -> dict:
     cmd = [_GRPCURL, "-plaintext", "-max-time", "40", "-d", json.dumps(payload), GRPC, method]
@@ -76,33 +75,23 @@ def _call(method: str, payload: dict) -> dict:
     except Exception:
         return {"_err": (r.stderr or r.stdout)[:160]}
 
-def _parse(v):
-    for _ in range(3):
-        if not isinstance(v, str):
-            return v
-        try:
-            v = json.loads(v)
-        except Exception:
-            return v
-    return v
-
-def ev(expr: str):
-    r = _call("cdp.runtime.RuntimeService/Evaluate", {"expression": expr, "return_by_value": True})
-    return _parse((r.get("result") or {}).get("value"))
 
 def navigate(url: str):
     _call("cdp.page.PageService/Navigate", {"url": url})
 
+
+# ---- human input (real mouse, no JS) -------------------------------------------
 def _mouse(t, x, y, **kw):
     p = {"type": t, "x": x, "y": y}; p.update(kw)
     _call("cdp.input.InputService/DispatchMouseEvent", p)
 
+
 def _smooth(t):  # smootherstep -> slow start, fast middle, slow end (ease-in-out)
     return t * t * t * (t * (t * 6 - 15) + 10)
 
+
 def _bezier(S, E, n=None):
-    """Human-ish cursor path: a bowed cubic Bezier, sampled with ease-in-out timing
-    (slow at the ends), small positional jitter, and randomized control points."""
+    """Human-ish cursor path: a bowed cubic Bézier, ease-in-out timing, small jitter."""
     dist = math.hypot(E[0]-S[0], E[1]-S[1])
     n = n or max(10, min(36, int(dist / 14)))
     bow = random.uniform(0.12, 0.32) * (1 if random.random() < 0.5 else -1)
@@ -116,20 +105,21 @@ def _bezier(S, E, n=None):
         time.sleep(random.uniform(0.008, 0.02))
     return E
 
+
 def human_click(E, start=(640, 430)):
-    # approach with a slight overshoot, then a small correction onto the target
     over = (E[0] + random.uniform(-7, 7), E[1] + random.uniform(-6, 6))
     _bezier(start, over)
     time.sleep(random.uniform(0.04, 0.11))
     _bezier(over, E, n=5)
-    time.sleep(random.uniform(0.13, 0.30))   # aim/settle before pressing
+    time.sleep(random.uniform(0.13, 0.30))
     _mouse("mouseMoved", E[0], E[1])
     _mouse("mousePressed", E[0], E[1], button="left", buttons=1, click_count=1)
     time.sleep(random.uniform(0.05, 0.13))
     _mouse("mouseReleased", E[0], E[1], button="left", buttons=0, click_count=1)
 
+
 def warmup():
-    """Look like a human reading: a couple of idle cursor wanders + scroll down/up."""
+    """Look like a human reading: idle cursor wanders + real wheel scroll down/up."""
     _bezier((random.randint(250, 450), random.randint(180, 280)),
             (random.randint(520, 820), random.randint(320, 520)))
     for dy in (random.randint(350, 600), random.randint(250, 450), -random.randint(300, 550)):
@@ -138,6 +128,7 @@ def warmup():
     _bezier((random.randint(500, 800), random.randint(300, 500)),
             (random.randint(200, 400), random.randint(150, 300)))
     time.sleep(random.uniform(0.4, 0.9))
+
 
 def _poll(get, ok, timeout=14, every=0.5):
     end = time.time() + timeout
@@ -148,91 +139,207 @@ def _poll(get, ok, timeout=14, every=0.5):
         time.sleep(every)
     return get()
 
-# ---- DOM expressions ----------------------------------------------------------
-REPLY = ("(function(){var b=document.querySelector('button.reply-button')||"
-         "[...document.querySelectorAll('button,a')].find(function(e){return e.textContent.trim().toLowerCase()==='reply';});"
-         "if(!b)return '';var r=b.getBoundingClientRect();"
-         "return JSON.stringify({cx:Math.round(r.x+r.width/2),cy:Math.round(r.y+r.height/2)});})()")
-OPTION_NAMES = ("JSON.stringify([...document.querySelectorAll('button.reply-option-header')]"
-                ".map(function(b){return b.textContent.replace(/\\s+/g,' ').trim().toLowerCase();}))")
-def OPT_POS(name):
-    return ("(function(){var t=[...document.querySelectorAll('button.reply-option-header')]"
-            ".find(function(e){return e.textContent.toLowerCase().indexOf('%s')>=0;});"
-            "if(!t)return '';var r=t.getBoundingClientRect();"
-            "return JSON.stringify({cx:Math.round(r.x+r.width/2),cy:Math.round(r.y+r.height/2)});})()") % name
-CONTACT_NAME = ("(function(){var e=document.querySelector('.reply-contact-name');if(!e)return '';"
-                "var t=e.textContent.replace(/\\s+/g,' ').trim();"
-                "var m=t.match(/contact name\\s*:\\s*(.+)/i);return m?m[1].trim():'';})()")
-# True when CL hasn't issued the reply token yet: the reply/contact data-href still
-# holds the literal __SERVICE_ID__ placeholder (JS swaps in a real id once CL grants
-# it). Seeing this after a click = the token was withheld, i.e. IP-throttled.
-REPLY_UNINIT = ("(function(){var e=document.querySelector('button.reply-button[data-href],a.show-contact[data-href]');"
-                "return !!(e&&/__SERVICE_ID__/.test(e.getAttribute('data-href')||''));})()")
-MAILTO = "(function(){var a=document.querySelector('a[href^=\"mailto:\"]');return a?a.getAttribute('href'):'';})()"
-PHONE = ("(function(){var t=document.querySelector('a[href^=\"tel:\"]');if(t)return t.getAttribute('href');"
-         "var p=document.querySelector('.reply-content,.reply-info,[class*=reply]');var s=p?p.innerText:'';"
-         "var m=s.match(/\\(\\d{3}\\)\\s*\\d{3}[-.\\s]?\\d{4}|\\d{3}[-.\\s]\\d{3}[-.\\s]\\d{4}/);return m?m[0]:'';})()")
 
-# ---- in-body "click to reveal contact" (unstructured; some posts hide a phone in
-# the BODY behind a JS click, separate from the reply panel) ---------------------
-# Shared element filter: clickable nodes in the posting body whose visible text reads
-# like a contact-reveal trigger ("show/click/tap ... phone/number/contact/email").
-# Skips real external-navigation anchors so a click can't sail off the post.
-_REVEAL_FILTER = (
-    "var b=document.querySelector('#postingbody,section#postingbody')||document.body;"
-    "var re=/(show|reveal|click|tap|see|view|get|press|unlock|here)[^.]{0,30}"
-    "(contact|phone|number|email|call|text|reach|info|details)|"
-    "(contact|phone|number|email)[^.]{0,20}(here|below|info|details|hidden|blocked)/i;"
-    "var els=[...b.querySelectorAll('button,a,span,div,strong,u,em,[onclick],[role=button]')];"
-    "var out=[];for(var i=0;i<els.length;i++){var e=els[i];"
-    "var t=(e.innerText||e.textContent||'').replace(/\\s+/g,' ').trim();"
-    "if(!t||t.length>80||!re.test(t))continue;"
-    "if(e.tagName==='A'){var h=e.getAttribute('href')||'';if(/^https?:/i.test(h))continue;}"
-    "var r=e.getBoundingClientRect();if(r.width<=0||r.height<=0)continue;out.push(e);}"
-)
-REVEAL_LIST = ("(function(){%s return JSON.stringify(out.slice(0,4).map(function(e){"
-               "return (e.innerText||e.textContent||'').replace(/\\s+/g,' ').trim().slice(0,60);}));})()"
-               % _REVEAL_FILTER)
-def REVEAL_POS(n):
-    return ("(function(){%s var e=out[%d];if(!e)return '';e.scrollIntoView({block:'center'});"
-            "var r=e.getBoundingClientRect();"
-            "return JSON.stringify({cx:Math.round(r.x+r.width/2),cy:Math.round(r.y+r.height/2)});})()"
-            % (_REVEAL_FILTER, n))
-BODY_CONTACTS = (
-    "(function(){var b=document.body;"   # whole page: a reveal may surface outside #postingbody
-    "var txt=b.innerText||'';"
-    "var ph=(txt.match(/\\(\\d{3}\\)\\s*\\d{3}[-.\\s]?\\d{4}|\\b\\d{3}[-.\\s]\\d{3}[-.\\s]\\d{4}\\b/g)||[]);"
-    "var tel=[...b.querySelectorAll('a[href^=\"tel:\"]')].map(function(a){return a.getAttribute('href').slice(4);});"
-    "var em=(txt.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/g)||[]);"
-    "var mail=[...b.querySelectorAll('a[href^=\"mailto:\"]')].map(function(a){return a.getAttribute('href').slice(7).split('?')[0];});"
-    "return JSON.stringify({phones:[...new Set(ph.concat(tel))],emails:[...new Set(em.concat(mail))]});})()"
-)
-# Verbatim revealed contact instructions — capture SEMANTICALLY (the actual call/text
-# lines with their extension/code), not just a bare phone. The masked relay needs the
-# extra ("Call (415) 943-0693 x 46" / "Text 46 to (415) 943-0693") to be usable, and
-# the exact wording varies, so we store it as-is for the dashboard.
-CONTACT_BLOCK = (
-    "(function(){var lines=(document.body.innerText||'').split(/\\n+/)"
-    ".map(function(s){return s.trim();}).filter(Boolean);"
-    # keep CALL/TEXT instruction lines or any line with a phone number; DROP the
-    # email reply-panel chrome (webmail providers / 'default mail app' / copy button)
-    "var hit=lines.filter(function(s){"
-    "if(/webmail|gmail|yahoo|hotmail|outlook|live mail|aol|default mail app|^copy$|reply using/i.test(s))return false;"
-    "return (/\\b(call|text)\\b/i.test(s)&&/\\d{3}/.test(s))||"
-    "/\\(?\\d{3}\\)?[-.\\s]?\\d{3}[-.\\s]\\d{4}/.test(s);});"
-    "return hit.slice(0,4).join('\\n').replace(/[ \\t]+/g,' ').trim().slice(0,300);})()"
-)
+# ---- CDP DOM reads (no JS) -----------------------------------------------------
+# grpcurl emits proto responses in camelCase (nodeId/nodeIds/outerHtml); accept both.
+def _g(d, *keys):
+    for k in keys:
+        if isinstance(d, dict) and d.get(k) not in (None, ""):
+            return d.get(k)
+    return None
+
+
+def _doc_root():
+    r = _call("cdp.dom.DOMService/GetDocument", {"depth": 0})
+    return _g(r.get("root") or {}, "nodeId", "node_id")
+
+
+def _qs(selector: str, root=None):
+    root = root or _doc_root()
+    if not root:
+        return None
+    r = _call("cdp.dom.DOMService/QuerySelector", {"node_id": root, "selector": selector})
+    return _g(r, "nodeId", "node_id")
+
+
+def _qsa(selector: str, root=None):
+    root = root or _doc_root()
+    if not root:
+        return []
+    r = _call("cdp.dom.DOMService/QuerySelectorAll", {"node_id": root, "selector": selector})
+    return _g(r, "nodeIds", "node_ids") or []
+
+
+def _center(node_id):
+    if not node_id:
+        return None
+    r = _call("cdp.dom.DOMService/GetBoxModel", {"node_id": node_id})
+    q = ((r.get("model") or {}).get("content")) or []
+    if len(q) < 8:
+        return None
+    return {"cx": round((q[0]+q[2]+q[4]+q[6])/4), "cy": round((q[1]+q[3]+q[5]+q[7])/4)}
+
+
+def _outer(node_id):
+    if not node_id:
+        return ""
+    r = _call("cdp.dom.DOMService/GetOuterHTML", {"node_id": node_id})
+    return _g(r, "outerHtml", "outer_html") or ""
+
+
+def _attrs(node_id):
+    r = _call("cdp.dom.DOMService/GetAttributes", {"node_id": node_id})
+    a = r.get("attributes") or []
+    return {a[i]: a[i+1] for i in range(0, len(a) - 1, 2)}
+
+
+def _html_lines(h: str) -> list:
+    """Rendered-ish text lines from raw HTML (block tags -> newlines), no JS."""
+    h = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", h or "")
+    h = re.sub(r"(?i)<\s*(br|/p|/div|/li|/h\d|/tr|/section)\s*/?>", "\n", h)
+    h = re.sub(r"(?s)<[^>]+>", " ", h)
+    return [re.sub(r"[ \t]+", " ", _html.unescape(ln)).strip() for ln in h.split("\n")]
+
+
+def _node_text(node_id) -> str:
+    return re.sub(r"\s+", " ", " ".join(_html_lines(_outer(node_id)))).strip()
+
+
+def _page_lines() -> list:
+    return [ln for ln in _html_lines(_outer(_doc_root())) if ln]
+
+
+def _page_text() -> str:
+    return " ".join(_page_lines())
+
+
+# ---- contact extraction (CDP DOM + Python parsing) -----------------------------
+_PHONE_PAT = r"\(\d{3}\)\s*\d{3}[-.\s]?\d{4}|\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b"
+_EMAIL_PAT = r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+_REVEAL_RE = re.compile(
+    r"(show|reveal|click|tap|see|view|get|press|unlock|here)[^.]{0,30}"
+    r"(contact|phone|number|email|call|text|reach|info|details)|"
+    r"(contact|phone|number|email)[^.]{0,20}(here|below|info|details|hidden|blocked)", re.I)
+
+
+def _reply_button_center():
+    """Center of the 'reply' button (real coords from the box model)."""
+    nid = _qs("button.reply-button")
+    if nid:
+        c = _center(nid)
+        if c:
+            return c
+    for nid in _qsa("button, a"):
+        if _node_text(nid).strip().lower() == "reply":
+            c = _center(nid)
+            if c:
+                return c
+    return None
+
+
+def _reply_options():
+    """[(name, center)] for each reply-option-header (email / call / text)."""
+    out = []
+    for nid in _qsa("button.reply-option-header"):
+        name = _node_text(nid).lower()
+        c = _center(nid)
+        if name and c:
+            out.append((name, c))
+    return out
+
+
+def _contact_name():
+    nid = _qs(".reply-contact-name")
+    if not nid:
+        return None
+    m = re.search(r"contact name\s*:\s*(.+)", _node_text(nid), re.I)
+    return (m.group(1).strip() if m else None) or None
+
+
+def _mailto():
+    nid = _qs('a[href^="mailto:"]')
+    return _attrs(nid).get("href", "") if nid else ""
+
+
+def _tel_or_phone():
+    nid = _qs('a[href^="tel:"]')
+    if nid:
+        h = _attrs(nid).get("href", "")
+        if h:
+            return h
+    m = re.search(_PHONE_PAT, _page_text())
+    return m.group(0) if m else ""
+
+
+def _reply_uninit() -> bool:
+    """True when CL withheld the reply token (data-href still holds __SERVICE_ID__)."""
+    for sel in ("button.reply-button[data-href]", "a.show-contact[data-href]"):
+        nid = _qs(sel)
+        if nid and "__SERVICE_ID__" in (_attrs(nid).get("data-href", "") or ""):
+            return True
+    return False
+
+
+def _body_contacts() -> dict:
+    txt = _page_text()
+    phones = set(re.findall(_PHONE_PAT, txt))
+    emails = set(re.findall(_EMAIL_PAT, txt))
+    for nid in _qsa('a[href^="tel:"]'):
+        phones.add(_attrs(nid).get("href", "")[4:])
+    for nid in _qsa('a[href^="mailto:"]'):
+        emails.add(_attrs(nid).get("href", "")[7:].split("?")[0])
+    return {"phones": [p for p in phones if p], "emails": [e for e in emails if e]}
+
+
+def _contact_block() -> str:
+    """Verbatim revealed call/text instruction lines (with extension/code), dropping
+    the email reply-panel chrome."""
+    hit = []
+    for s in _page_lines():
+        if re.search(r"webmail|gmail|yahoo|hotmail|outlook|live mail|aol|default mail app|^copy$|reply using", s, re.I):
+            continue
+        if (re.search(r"\b(call|text)\b", s, re.I) and re.search(r"\d{3}", s)) or re.search(_PHONE_PAT, s):
+            hit.append(s)
+    return "\n".join(hit[:4]).strip()[:300]
+
+
+def _reveal_triggers():
+    """[(label, center)] for in-body 'click to reveal contact' triggers (by text)."""
+    body = _qs("#postingbody") or _qs("section#postingbody") or _doc_root()
+    out = []
+    for nid in _qsa("button, a, [onclick], [role=button]", root=body):
+        t = _node_text(nid)
+        if not t or len(t) > 80 or not _REVEAL_RE.search(t):
+            continue
+        if (_attrs(nid).get("href", "") or "").lower().startswith(("http://", "https://")):
+            continue
+        c = _center(nid)
+        if c:
+            out.append((t[:60], c))
+        if len(out) >= 4:
+            break
+    return out
+
+
+# ---- orchestration -------------------------------------------------------------
+def _email_addr(mailto):
+    if not mailto:
+        return None
+    m = mailto[len("mailto:"):] if mailto.startswith("mailto:") else mailto
+    return m.split("?", 1)[0] or None
+
+
+def _phone_num(v):
+    if not v:
+        return None
+    return v[len("tel:"):] if v.startswith("tel:") else v
 
 
 def _grab_details(out: dict) -> None:
-    """Capture the call/text instructions into out['details'] ONLY when they carry a
-    real special step (a masked-relay extension/code). A plain number is left to the
-    `phone` field — we don't store marketing sentences or the post body."""
     if out.get("details"):
         return
-    cb = ev(CONTACT_BLOCK)
-    if isinstance(cb, str) and _EXT_RE.search(cb):
-        # keep just the line(s) bearing the number/code, trimmed of surrounding prose
+    cb = _contact_block()
+    if cb and _EXT_RE.search(cb):
         line = next((ln.strip() for ln in cb.splitlines() if _EXT_RE.search(ln)), cb.strip())
         out["details"] = line[:160]
 
@@ -244,65 +351,53 @@ def _new_contact(bc, before_ph, before_em) -> bool:
 
 
 def _read_reply_panel(out: dict) -> bool:
-    """If the reply panel is (or becomes) open, enumerate its option headers
-    (email/call/text), human-click each, and read the revealed mailto/tel into `out`.
-    Returns True if any options were found. Used after the reply button AND after an
-    in-body reveal (a 'show contact info' trigger sometimes opens this same panel)."""
-    got = _poll(lambda: ev(OPTION_NAMES), lambda v: isinstance(v, list) and len(v) > 0, timeout=14)
-    if not (isinstance(got, list) and got):
+    """If the reply panel is (or becomes) open, enumerate its option headers, human-
+    click each, and read the revealed mailto/tel. Returns True if options were found."""
+    opts = _poll(_reply_options, lambda v: bool(v), timeout=14)
+    if not opts:
         return False
     time.sleep(3)
-    names = ev(OPTION_NAMES) or got
-    out["options"] = names
+    opts = _reply_options() or opts
+    out["options"] = [n for n, _ in opts]
     if not out.get("name"):
-        out["name"] = ev(CONTACT_NAME) or None
-    for name in names:
-        pos = ev(OPT_POS(name))
-        if not isinstance(pos, dict):
+        out["name"] = _contact_name()
+    for name in list(out["options"]):
+        cur = {n: c for n, c in _reply_options()}              # fresh coords per click
+        c = cur.get(name)
+        if not c:
             continue
-        human_click((pos["cx"], pos["cy"]), start=(pos["cx"] + 120, pos["cy"] - 30))
+        human_click((c["cx"], c["cy"]), start=(c["cx"] + 120, c["cy"] - 30))
         if "email" in name:
-            mt = _poll(lambda: ev(MAILTO), lambda v: isinstance(v, str) and v.startswith("mailto"), timeout=12)
+            mt = _poll(_mailto, lambda v: isinstance(v, str) and v.startswith("mailto"), timeout=12)
             if mt:
                 out["email"] = _email_addr(mt)
         else:  # call / text
-            ph = _poll(lambda: ev(PHONE), lambda v: isinstance(v, str) and v != "", timeout=12)
+            ph = _poll(_tel_or_phone, lambda v: isinstance(v, str) and v != "", timeout=12)
             if ph:
                 out["phone"] = _phone_num(ph)
-            _grab_details(out)   # verbatim "Call ... x46 / Text 46 to ..." wording
+            _grab_details(out)
     return True
 
 
 def reveal_in_body(out: dict) -> list:
-    """If the post BODY gates contact behind a 'click to reveal' element, click it
-    (human-like) and capture what it surfaces — which can be EITHER an inline
-    phone/email in the page text OR the standard reply panel opening. Mutates `out`
-    (fills phone/email if still empty). Best-effort: no candidates -> no clicks.
-    Returns the list of trigger labels it clicked."""
-    names = ev(REVEAL_LIST)
-    if not (isinstance(names, list) and names):
+    """Click any in-body 'reveal contact' trigger (human-like) and capture what it
+    surfaces (inline phone/email OR the reply panel). Best-effort."""
+    triggers = _reveal_triggers()
+    if not triggers:
         return []
-    before = ev(BODY_CONTACTS) or {}
+    before = _body_contacts()
     before_ph = set(before.get("phones") or [])
     before_em = set(before.get("emails") or [])
     clicked = []
-    for i in range(len(names)):
-        pos = ev(REVEAL_POS(i))
-        if not isinstance(pos, dict):
-            continue
+    for label, c in triggers:
         time.sleep(random.uniform(0.4, 1.0))
-        human_click((pos["cx"], pos["cy"]), start=(pos["cx"] + 110, pos["cy"] - 40))
-        clicked.append(names[i])
-        # The reveal is ASYNC (AJAX) — POLL up to ~12s for a NEW phone/email to appear
-        # inline (the common case). A fixed sleep was too short and missed it.
-        _poll(lambda: ev(BODY_CONTACTS),
-              lambda bc: _new_contact(bc, before_ph, before_em), timeout=12, every=1.0)
-        # If nothing inlined, the reveal may instead have opened the reply panel.
-        if not _new_contact(ev(BODY_CONTACTS), before_ph, before_em) \
+        human_click((c["cx"], c["cy"]), start=(c["cx"] + 110, c["cy"] - 40))
+        clicked.append(label)
+        _poll(_body_contacts, lambda bc: _new_contact(bc, before_ph, before_em), timeout=12, every=1.0)
+        if not _new_contact(_body_contacts(), before_ph, before_em) \
                 and not (out.get("email") or out.get("phone")):
             _read_reply_panel(out)
-    # Pick up any phone/email that newly appeared anywhere on the page + verbatim text.
-    after = ev(BODY_CONTACTS) or {}
+    after = _body_contacts()
     if not out.get("phone"):
         new_ph = [p for p in (after.get("phones") or []) if p not in before_ph]
         if new_ph:
@@ -315,40 +410,25 @@ def reveal_in_body(out: dict) -> list:
     return clicked
 
 
-def _email_addr(mailto: str | None) -> str | None:
-    if not mailto:
-        return None
-    m = mailto[len("mailto:"):] if mailto.startswith("mailto:") else mailto
-    return m.split("?", 1)[0] or None
-
-def _phone_num(v: str | None) -> str | None:
-    if not v:
-        return None
-    return v[len("tel:"):] if v.startswith("tel:") else v
-
-
 def fetch_contact(url: str) -> dict:
-    """Drive chromerpc to reveal + read the contact for one listing — the standard
-    reply panel AND any in-body 'click to reveal contact' widget.
-    Returns {email, phone, options, name, ok, note, body_reveal}."""
+    """Drive chromerpc (human input + CDP DOM reads, no JS) to reveal + read the
+    contact for one listing. Returns {email, phone, options, name, ok, note, ...}."""
     _call("cdp.emulation.EmulationService/ClearDeviceMetricsOverride", {})
     navigate(url)
     time.sleep(random.uniform(2.5, 4.0))
-    warmup()                       # idle wander + scroll, like a human reading first
+    warmup()                       # human idle wander + scroll first
     out = {"ok": False, "options": None, "name": None, "email": None, "phone": None,
            "details": None}
 
     # 1) Standard reply panel (the common case).
-    rb = ev(REPLY)
-    if isinstance(rb, dict):
+    rb = _reply_button_center()
+    if rb:
         time.sleep(random.uniform(0.4, 1.1))
         human_click((rb["cx"], rb["cy"]))
         if _read_reply_panel(out):
             out["ok"] = True
 
-    # 2) In-body click-to-reveal contact (best-effort; no-ops if the body has none).
-    #    Handles a 'show contact info' widget that either inlines the number or opens
-    #    the reply panel. Skipped only if we already have both email AND phone.
+    # 2) In-body click-to-reveal contact (best-effort).
     if not (out.get("email") and out.get("phone")):
         try:
             clicked = reveal_in_body(out)
@@ -360,7 +440,7 @@ def fetch_contact(url: str) -> dict:
             out.setdefault("note", f"body-reveal error: {e}")
 
     if not out["ok"]:
-        if ev(REPLY_UNINIT) is True:
+        if _reply_uninit():
             out["note"] = ("reply token not issued (__SERVICE_ID__ unresolved) — IP-throttled; "
                            "retry later, spaced out (one pass per listing)")
         else:
@@ -388,10 +468,10 @@ def main() -> None:
     if not args.ids and not args.all_vetted:
         ap.error("give listing ids or --all-vetted")
 
-    # chromerpc reachable?
-    if "_err" in _call("cdp.runtime.RuntimeService/Evaluate", {"expression": "1", "return_by_value": True}):
+    # chromerpc reachable? (CDP DOM call, no JS)
+    if "_err" in _call("cdp.dom.DOMService/GetDocument", {"depth": 0}):
         raise SystemExit("chromerpc not reachable on " + GRPC +
-                         " — start it: cd chromerpc && ./bin/chromerpc -headless -addr :50051 &")
+                         " — start it: cd chromerpc && ./bin/chromerpc -headless=false -addr :50051 &")
 
     conn = db.connect()
     targets = _targets(conn, args)

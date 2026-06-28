@@ -17,6 +17,16 @@ quick path conflict, follow the rule. CLAUDE.md owns the *pipeline*; this owns t
   and cap new detail fetches per run (`--max-detail`). Don't loop aggressively or
   you'll re-trigger the captcha wall. Per-run dedup + blocklist mean steady-state
   runs only fetch genuinely-new listings.
+- **NEVER use JavaScript (`Runtime.Evaluate`) to interact with or scrape a site.**
+  Drive the page like a HUMAN through chromerpc only: real `Input` mouse moves +
+  clicks (human Bézier paths), real scrolling (`Input.DispatchMouseEvent` wheel),
+  keyboard. To LOCATE elements + READ content, use the CDP **DOM domain**
+  (`GetDocument` → `QuerySelector(All)` → `GetBoxModel` for click coords,
+  `GetOuterHTML` / `GetAttributes` to read) and parse the HTML in **Python** — do
+  NOT inject page scripts. Executing JS creates a detectable context and is what
+  trips PerimeterX/Akamai; CDP-native reads + human input are stealthier. This
+  applies to ALL site automation (fetch_zillow_cr, fetch_apartments_cr,
+  fetch_cl_contacts).
 - **Confirm an actor's output is REAL before trusting it or quoting its cost.**
   `epctex/apartments-scraper-api` returns `{"demo": true}` placeholders **and still
   bills** — we abandoned it. Inspect a couple of items' *content*, not just counts.
