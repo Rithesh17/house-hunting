@@ -85,11 +85,25 @@ JS_DETAIL = r"""
          for(var k in o)stack.push(o[k]);}}}catch(e){}});
  }
  desc=(desc||'').replace(/\s*Show (more|less)\s*$/i,'').trim();
- var imgs=[];[...document.querySelectorAll('img')].forEach(function(i){var s=i.src||'';if(/photos\.zillowstatic.*\.(jpg|jpeg|webp|png)/i.test(s))imgs.push(s.replace(/-cc_ft_\d+/,'-cc_ft_960'));});
- imgs=[...new Set(imgs)];
+ // PHOTOS: take ONLY this unit's photos from the responsivePhotos gallery data
+ // (the same set behind "See all N photos"). Scraping <img> tags pulls in the
+ // "Nearby apartments" carousel = other units' photos. The unit's photos are the
+ // first N distinct base-ids right after the responsivePhotos key (contiguous).
+ var imgs=[];
+ var scripts=[...document.querySelectorAll('script')].map(function(x){return x.textContent;});
+ var key='responsivePhotos', ps=scripts.find(function(t){return t&&t.indexOf('responsivePhotos')>=0;});
+ if(!ps){ key='galleryPhotos'; ps=scripts.find(function(t){return t&&t.indexOf('galleryPhotos')>=0;}); }
+ if(ps){
+   var btn=[...document.querySelectorAll('button,a')].find(function(e){return /see all \d+ photos/i.test(e.innerText||'');});
+   var n=btn?+((btn.innerText.match(/(\d+)\s*photos/i)||[0,0])[1]):0;
+   var k=ps.indexOf(key), seg=ps.slice(k,k+200000);
+   var pr=/\/fp\/([a-f0-9]{16,})-cc_ft_\d+\.(?:jpg|jpeg|webp|png)/g, mm, seen={};
+   while((mm=pr.exec(seg))){ if(!seen[mm[1]]){ seen[mm[1]]=1; imgs.push('https://photos.zillowstatic.com/fp/'+mm[1]+'-cc_ft_1536.jpg'); } }
+   if(n>0) imgs=imgs.slice(0,n);
+ }
  var body=document.body.innerText||'';
  var phone=(body.match(/\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}/)||[''])[0];
- return JSON.stringify({desc:desc.slice(0,4000), imgs:imgs.slice(0,12), phone:phone});
+ return JSON.stringify({desc:desc.slice(0,4000), imgs:imgs, phone:phone});
 })()
 """
 
@@ -220,7 +234,8 @@ def pull_region(conn, cfg, sess, cr, region_key: str, max_detail: int) -> int:
                               neighborhood=None, posted_at=None):
             continue
         imgs = d.get("imgs") or []
-        image_dir, image_count = fetch_detail.download_images(sess, pid, imgs)
+        # store the FULL unit photo set (dashboard); download a subset transiently for vetting
+        image_dir, image_count = fetch_detail.download_images(sess, pid, imgs[:12])
         fields = {
             "source": "zillow", "lat": c.get("lat"), "lng": c.get("lng"),
             "address": c.get("addr"),
