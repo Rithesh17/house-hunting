@@ -6,8 +6,11 @@ mechanical work and personally do the **vision vetting + fit ranking**.
 
 > **Read `THUMB_RULES.md` first** — standing cost/efficiency guardrails (don't abuse
 > paid APIs, store only what the dashboard needs, never opt into paid tiers). They
-> override convenience. Key one: **Zillow (paid Apify) runs at most ONCE per
-> calendar day**; Craigslist + Zumper (free) can run any time.
+> override convenience.
+>
+> **Read `MANUAL_SOURCES.md`** — **Zillow + Apartments.com are gathered BY HAND** by
+> you (the LLM) driving headful chromerpc; there is no scraper and you must not write
+> one. Craigslist + Zumper are the only scripted sources.
 >
 > **`OUTREACH.md`** covers the email outreach pipeline layered on top of the refresh
 > (Stage 0 read+vet replies → Stage 1 vet+enrich listings → Stage 2 contact+send),
@@ -116,33 +119,19 @@ Craigslist,"* *"any new places today?"* — run the pipeline below end to end.
   starts it). If chromerpc is down it falls back to the old Playwright path
   (`DescriptionFetcher`, usually a no-op here) → `description=None`; pipeline
   still runs but room-shares can't be caught from the body that run.
-- **Zillow** (`scripts/fetch_zillow_cr.py`) — Zillow hard-blocks scraping
-  (PerimeterX), but a LOCAL **headful chromerpc** Chrome with a normal UA passes it
-  (headless / the `HeadlessChrome` UA is instantly walled). So we drive the real
-  browser: navigate the rentals search with a `searchQueryState` URL (region map
-  bounds + `mp.max=<cap>` price cap + `sort=days` newest), parse the page's embedded
-  `listResults` JSON (every card: price/beds/baths/sqft/address/detailUrl/recency/
-  lat-lng), enforce `<= cap` (building cards leak units over the cap), then open each
-  NEW listing's detail page and read the **description FROM THE DOM**
-  (`[data-testid=description]` — Zillow omits the body from `__NEXT_DATA__` for
-  `/homedetails/`; SEO/building boilerplate is filtered to None) + photos + contact.
-  FREE (no Apify), runs every refresh; `--region {sf,berkeley,both}`, `--max-detail`
-  caps new detail fetches/run. SHARED-ROOM GATE applies (1801 Franklin proved
-  photos+bedcount alone is NOT enough — the body said "room in a 2BR"). Stores coords
-  (area model) + price + url + photos + description + raw card fields in
-  `source_extra.raw`; NO AUTO-MAP (the subagent authors display fields).
-  *(`scripts/fetch_zillow.py` = the RETIRED paid Apify actor `igolaizola/
-  zillow-scraper-ppe`; kept only as a manual fallback, not in the default flow.)*
-- **Apartments.com** (`scripts/fetch_apartments_cr.py`) — also bot-walled (Akamai;
-  headless `HeadlessChrome` UA = instant "Access Denied"). Headful chromerpc + a
-  homepage warm-up (sets the `_abck` cookie) gets in. Navigate `/<region>/under-<cap>/`
-  (+ paginated), read each placard's address/price/beds/**type**/phone off the card,
-  DROP "Room for Rent" cards (Apartments labels shared rooms explicitly), then open
-  each NEW non-room listing for the `#descriptionSection` body + photos + phone +
-  embedded lat/lng (else geocode). NOTE: Apartments lists managed BUILDINGS, has no
-  real "posted in 24h", and its cheap SF inventory is mostly rooms/SROs/BMR — expect
-  few keeps. `source='apartments'`. NO AUTO-MAP.
-All four sources feed the SAME downstream (vetting, dedup, dashboard). `tools/dedup.py`
+- **Zillow + Apartments.com** — **NOT scripted. Gathered BY HAND by the LLM** through
+  headful chromerpc every run (after `refresh.py`, before vetting). There is no
+  scraper for either and you must not write one or delegate to a subagent —
+  **see `MANUAL_SOURCES.md`** for the full how-to and the hard "no script" rule. Both
+  are bot-walled (Zillow PerimeterX, Apartments Akamai) and brittle to scrape, and
+  filtered to ≤cap + last-24h they're only a handful of posts/day — cheaper and more
+  reliable to read by hand. The old `fetch_zillow_cr.py` / `fetch_apartments_cr.py` /
+  Apify `fetch_zillow.py` were **deleted** for this reason (the Zillow one had already
+  broken on a leftover JS-eval call). You drive chromerpc's input gRPC for interaction
+  (human mouse/scroll/keys), read the DOM only to extract info, screenshot every step,
+  sort newest, stop at the first >24h post, vet inline, then add keeps to the DB by
+  hand (`source='zillow'`/`'apartments'`, real coords) so they join the same flow.
+All sources feed the SAME downstream (vetting, dedup, dashboard). `tools/dedup.py`
 merges the same unit ACROSS sources (by shared image id, address, OR rounded coords +
 price + room_type) into one tile; the dossier lists each source's link.
 
@@ -150,17 +139,23 @@ price + room_type) into one tile; the dossier lists each source's link.
 This is the full cycle. Run it end to end:
 1. `py scripts/refresh.py` — does the deterministic plumbing incrementally:
    **launch headful chromerpc (auto)** + **hydrate local DB from Supabase** +
-   Craigslist pull + Zumper pull + **Zillow pull** + **Apartments.com pull** (Zillow
-   & Apartments via the headful chromerpc browser — both FREE now, run every refresh;
-   `--no-zillow` / `--no-apartments` to skip, `--no-browser` to not auto-launch
-   chromerpc) + detail/photos/gates + prune dead links + dedupe + **Stage-2 research
-   bundles** (`scripts/research.py --all-new` → `data/research/<id>.json`). It prints
-   how many NEW listings need vetting AND which market buckets need a web lookup.
-   refresh.py auto-launches chromerpc headful if it's not already on :50051 (set
-   `CHROMERPC_BIN` / `CHROME_BIN` in `.env` so it can find the binaries); headful is
-   REQUIRED — Zillow (PerimeterX) and Apartments (Akamai) hard-block headless.
-   **A launchd cron runs this full cycle every 4 hours** (01/05/09/13/17/21) via
-   headless Claude — every run pulls all four free sources. Those runs use
+   Craigslist pull + Zumper pull + detail/photos/gates + prune dead links + dedupe +
+   **Stage-2 research bundles** (`scripts/research.py --all-new` →
+   `data/research/<id>.json`). It prints how many NEW listings need vetting AND which
+   market buckets need a web lookup. **It does NOT pull Zillow or Apartments** — those
+   are gathered BY HAND next (step 1b). refresh.py auto-launches chromerpc headful if
+   it's not already on :50051 (it self-clones+builds chromerpc if no binary is found;
+   `CHROME_BIN` in `.env` overrides Chrome detection); headful is REQUIRED — chromerpc
+   backs Zumper detail, the CL contact fetch, and the manual gather. `--no-browser`
+   skips the auto-launch.
+1b. **Manual Zillow + Apartments.com gather — BY HAND, NO scripts** (see
+   `MANUAL_SOURCES.md`). With chromerpc up, you (the LLM) open both sites yourself for
+   SF + Berkeley, set the price cap, sort newest, walk the results until you pass 24h,
+   open each recent post slowly (screenshot + DOM-read), vet inline, and insert keeps
+   into the DB (`source='zillow'`/`'apartments'`, real coords). NEVER write a scraper
+   or spawn a subagent for this — it's a tiny daily list. When ALL stages are done,
+   `py scripts/refresh.py --teardown-chromerpc`.
+   **A launchd cron runs this cycle (currently disabled — user triggers manually).** Cron runs use
    `notify.py --new --quiet-if-empty` so only real new picks
    ping Telegram (no repeated "nothing new" notes). See THUMB_RULES.md. The
    hydrate step (`scripts/hydrate_from_supabase.py`) pulls the cloud read-model
@@ -485,11 +480,9 @@ NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
 ## Scripts
 - `scripts/fetch_listings.py` — multi-pass discovery → DB stubs.
 - `scripts/fetch_detail.py` — parse post + download photos (+ phone/email/DRE#).
-- `scripts/fetch_zillow_cr.py` — pull SF + Berkeley Zillow rentals via headful
-  chromerpc (FREE; default). `source='zillow'` rows; reads description from the DOM.
-- `scripts/fetch_apartments_cr.py` — pull SF + Berkeley Apartments.com via headful
-  chromerpc (FREE; drops "Room for Rent" cards). `source='apartments'` rows.
-- `scripts/fetch_zillow.py` — RETIRED paid Apify Zillow actor; manual fallback only.
+- **Zillow + Apartments.com have NO script** — gathered BY HAND via chromerpc; see
+  `MANUAL_SOURCES.md`. (The old `fetch_zillow_cr.py`, `fetch_apartments_cr.py`, and the
+  retired Apify `fetch_zillow.py` were deleted — do not recreate them.)
 - `scripts/research.py` — Stage-2: assemble `data/research/<id>.json` (DRE + owner
   + market range + duplicate siblings) for the vetting subagent to cross-check.
 - `scripts/verify_dre.py` — look up a CA DRE license (name/status/broker/discipline)
@@ -539,4 +532,5 @@ NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
 - Be polite to Craigslist (the scripts set a UA + delay). Fetch details only for
   new, in-area posts.
 - `lat/lng` come from the post and are block/neighborhood accurate, not exact.
-- Future: add Zillow/Zumper adapters behind the same fetch → vet → dashboard flow.
+- Zillow + Apartments.com are MANUAL (no scraper) — see `MANUAL_SOURCES.md`. All
+  sources still converge on the same vet → dedup → dashboard flow.

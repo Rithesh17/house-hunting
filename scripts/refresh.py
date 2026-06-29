@@ -1,25 +1,36 @@
 """One-shot incremental refresh of the deterministic pipeline:
 
-    py scripts/refresh.py                 # all sources (CL + Zumper + Zillow + Apartments)
-    py scripts/refresh.py --no-zillow     # skip the Zillow pull this run
-    py scripts/refresh.py --no-apartments # skip the Apartments.com pull
-    py scripts/refresh.py --no-browser    # don't auto-launch chromerpc
+    py scripts/refresh.py                  # SCRIPTED sources (Craigslist + Zumper)
+    py scripts/refresh.py --no-browser     # don't auto-launch chromerpc
+    py scripts/refresh.py --teardown-chromerpc  # stop the chromerpc we launched + rm temp
+
+Only Craigslist + Zumper are scripted. **Zillow + Apartments.com are gathered BY
+HAND** by the LLM driving headful chromerpc directly (no scrapers) — see
+MANUAL_SOURCES.md. (Their old scrapers were deleted: they were bot-walled + brittle,
+and it is a tiny daily list not worth a script.) chromerpc is still launched here
+because Zumper detail + the CL contact fetch + the manual Zillow/Apartments gather
+all need it.
 
 Runs, in order:
-  0. Launch HEADFUL chromerpc on :50051 if not already up (backs Zumper + Zillow +
-     Apartments, which are bot-walled against headless, and the CL contact fetch).
-     Set CHROMERPC_BIN / CHROME_BIN in .env to point at the binaries.
+  0. Launch HEADFUL chromerpc on :50051 if not already up (backs Zumper detail, the
+     CL contact fetch, and the manual Zillow/Apartments gather — all bot-walled
+     against headless). Self-contained: if no prebuilt binary is found (CHROMERPC_BIN
+     / a repo-local bin/), it git-clones chromerpc into an OS temp dir and `go build`s
+     it, then launches that. The launch is recorded (data/.chromerpc_runtime.json);
+     call `--teardown-chromerpc` once ALL stages are done to stop it + delete the temp
+     clone. OS-independent (tempfile + git + go; needs git + a Go toolchain only
+     when building from source). CHROME_BIN overrides Chrome auto-detection.
   1. Hydrate local DB from Supabase (scripts/hydrate_from_supabase.py)
   2. Craigslist incremental pull    (scripts/fetch_listings.py, SF + East Bay)
   3. Zumper incremental pull         (scripts/fetch_zumper.py)
-  4. Zillow pull via headful chromerpc (scripts/fetch_zillow_cr.py) — FREE, every
-     run. Replaced the paid Apify actor (fetch_zillow.py kept as a manual fallback).
-  5. Apartments.com pull via headful chromerpc (scripts/fetch_apartments_cr.py)
-  6. Detail + photos + hard gates    (scripts/fetch_detail.py --all-new)
-  7. Prune taken-down listings       (scripts/check_links.py)
-  8. Dedupe across sources           (tools/dedup.py)
-  9. Stage-2 research bundles        (scripts/research.py --all-new)
- 10. Publish to Supabase             (scripts/sync_supabase.py)
+  4. Detail + photos + hard gates    (scripts/fetch_detail.py --all-new)
+  5. Prune taken-down listings       (scripts/check_links.py)
+  6. Dedupe across sources           (tools/dedup.py)
+  7. Stage-2 research bundles        (scripts/research.py --all-new)
+  8. Publish to Supabase             (scripts/sync_supabase.py)
+
+After this finishes, the LLM does the MANUAL Zillow + Apartments gather (MANUAL_SOURCES.md)
+before vetting, so those listings join the same vet -> dedup -> sync flow.
 
 Step 6 fetches the free external facts (DRE / ownership / duplicate siblings /
 cached market range) into data/research/<id>.json for the vetting subagents to
@@ -40,11 +51,14 @@ CLAUDE.md for the full cycle (vet -> apply_verdicts -> dedup -> notify -> purge)
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 try:
@@ -57,6 +71,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable or "py"
 load_dotenv(os.path.join(ROOT, ".env"))
 
+# chromerpc, self-contained. When no prebuilt binary is found we clone+build it
+# from source into an OS temp dir; this file records what we launched (pid) and
+# what to delete (the temp clone) so `--teardown-chromerpc` can stop it and clean
+# up after every stage has run. OS-independent (tempfile + git + go build).
+CHROMERPC_REPO = "https://github.com/accretional/chromerpc"
+CHROMERPC_STATE = os.path.join(ROOT, "data", ".chromerpc_runtime.json")
+
 PRE_STEPS = [
     ("Hydrate from Supabase", ["scripts/hydrate_from_supabase.py"]),
     ("Craigslist pull (SF)", ["scripts/fetch_listings.py"]),
@@ -64,11 +85,9 @@ PRE_STEPS = [
      ["scripts/fetch_listings.py", "--region", "eby"]),
     ("Zumper pull", ["scripts/fetch_zumper.py"]),
 ]
-# Browser-backed (headful chromerpc) source pulls — free, run every refresh. These
-# replaced the paid Apify Zillow actor; fetch_zillow.py (Apify) is kept only as a
-# manual fallback and is no longer in the default flow.
-ZILLOW_STEP = ("Zillow pull (headful chromerpc)", ["scripts/fetch_zillow_cr.py"])
-APARTMENTS_STEP = ("Apartments.com pull (headful chromerpc)", ["scripts/fetch_apartments_cr.py"])
+# NOTE: Zillow + Apartments.com are NOT scripted. The LLM gathers them BY HAND through
+# headful chromerpc after this run finishes (see MANUAL_SOURCES.md). Their scrapers were
+# deleted on purpose — bot-walled, brittle, and a tiny daily list not worth automating.
 POST_STEPS = [
     ("Detail + photos + gates", ["scripts/fetch_detail.py", "--all-new"]),
     ("Prune dead links", ["scripts/check_links.py"]),
@@ -104,78 +123,172 @@ def _find_chromerpc_bin() -> str | None:
 
 def _find_chrome_bin() -> str | None:
     cand = [os.getenv("CHROME_BIN"),
+            # macOS
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            # Windows
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            shutil.which("google-chrome"), shutil.which("chromium")]
+            # Linux / PATH
+            shutil.which("google-chrome"), shutil.which("google-chrome-stable"),
+            shutil.which("chromium"), shutil.which("chromium-browser")]
     return next((c for c in cand if c and os.path.exists(c)), None)
 
 
-def ensure_chromerpc(port: int = 50051) -> bool:
-    """Make sure a HEADFUL chromerpc is listening on :port (Zumper/Zillow/Apartments
-    + CL-contact all need it; Zillow & Apartments are bot-walled against headless).
-    Launches it if a binary is found (env CHROMERPC_BIN / CHROME_BIN override the
-    auto-detected paths). Returns True if reachable."""
-    if _port_open("127.0.0.1", port):
-        print(f"[chromerpc] already up on :{port}")
-        return True
-    binp = _find_chromerpc_bin()
-    if not binp:
-        print("[chromerpc] not running and binary not found — set CHROMERPC_BIN in "
-              ".env to auto-launch (Zillow/Apartments will be skipped).", file=sys.stderr)
-        return False
+def _clone_and_build_chromerpc() -> tuple[str, str] | None:
+    """Clone chromerpc from GitHub into a fresh OS temp dir and `go build` it.
+    Returns (binary_path, temp_dir) on success, or None. OS-independent: uses
+    tempfile for the dir, git for the clone, and the Go toolchain for the build
+    (GOTOOLCHAIN=auto pulls the exact go.mod version if the local one is older)."""
+    git = shutil.which("git")
+    go = shutil.which("go") or (os.path.exists("/usr/local/go/bin/go") and "/usr/local/go/bin/go") or None
+    if not git or not go:
+        print("[chromerpc] cannot build from source — "
+              f"{'git' if not git else 'go'} not found on PATH.", file=sys.stderr)
+        return None
+    tmp = tempfile.mkdtemp(prefix="househunt-chromerpc-")
+    binname = "chromerpc.exe" if os.name == "nt" else "chromerpc"
+    binpath = os.path.join(tmp, "bin", binname)
+    try:
+        print(f"[chromerpc] cloning {CHROMERPC_REPO} -> {tmp}")
+        subprocess.run([git, "clone", "--depth", "1", CHROMERPC_REPO, tmp],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                       timeout=300)
+        print("[chromerpc] building (go build ./cmd/chromerpc) — first build downloads modules…")
+        subprocess.run([go, "build", "-o", os.path.join("bin", binname), "./cmd/chromerpc"],
+                       cwd=tmp, check=True, timeout=900,
+                       env={**os.environ, "GOTOOLCHAIN": "auto", "CGO_ENABLED": "0"})
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print(f"[chromerpc] clone/build failed: {e}", file=sys.stderr)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return None
+    if not os.path.exists(binpath):
+        print("[chromerpc] build produced no binary.", file=sys.stderr)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return None
+    return binpath, tmp
+
+
+def _launch_chromerpc(binp: str, port: int, tmpdir: str | None) -> bool:
+    """Launch a headful chromerpc detached and record runtime state (pid + the
+    temp clone to delete) so teardown_chromerpc() can stop + clean up later."""
     chrome = _find_chrome_bin()
     cmd = [binp, "-addr", f":{port}", "-headless=false"]
     if chrome:
         cmd += ["-chrome", chrome]
     print(f"[chromerpc] launching headful: {' '.join(cmd)}")
     try:
-        create_flags = 0x00000008 if os.name == "nt" else 0  # DETACHED_PROCESS
-        subprocess.Popen(cmd, cwd=os.path.dirname(os.path.dirname(binp)) or ROOT,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         creationflags=create_flags) if os.name == "nt" else \
-            subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+        if os.name == "nt":
+            proc = subprocess.Popen(
+                cmd, cwd=os.path.dirname(os.path.dirname(binp)) or ROOT,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=0x00000008 | 0x00000200)  # DETACHED_PROCESS | NEW_PROCESS_GROUP
+        else:
+            proc = subprocess.Popen(
+                cmd, cwd=ROOT, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True)
     except Exception as e:
         print(f"[chromerpc] launch failed: {e}", file=sys.stderr)
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
         return False
+    # Record what we own so a later --teardown-chromerpc can stop it + delete the clone.
+    try:
+        os.makedirs(os.path.dirname(CHROMERPC_STATE), exist_ok=True)
+        with open(CHROMERPC_STATE, "w") as f:
+            json.dump({"pid": proc.pid, "tmpdir": tmpdir, "port": port}, f)
+    except OSError as e:
+        print(f"[chromerpc] could not write runtime state: {e}", file=sys.stderr)
     for _ in range(20):
         time.sleep(1)
         if _port_open("127.0.0.1", port):
-            print(f"[chromerpc] up on :{port}")
+            print(f"[chromerpc] up on :{port} (pid {proc.pid})")
             time.sleep(2)  # let Chrome attach
             return True
     print("[chromerpc] did not come up in time.", file=sys.stderr)
     return False
 
 
+def ensure_chromerpc(port: int = 50051) -> bool:
+    """Make sure a HEADFUL chromerpc is listening on :port (Zumper/Zillow/Apartments
+    + CL-contact all need it; Zillow & Apartments are bot-walled against headless).
+
+    Resolution order: (1) already up -> reuse; (2) a prebuilt binary (env
+    CHROMERPC_BIN or a repo-local bin/) -> launch it; (3) otherwise clone+build
+    chromerpc from source into an OS temp dir and launch that (fully self-
+    contained, no prior install). What we launch is recorded so
+    teardown_chromerpc() can stop it and delete the temp clone after every stage.
+    Returns True if reachable."""
+    if _port_open("127.0.0.1", port):
+        print(f"[chromerpc] already up on :{port}")
+        return True
+    binp = _find_chromerpc_bin()
+    if binp:
+        return _launch_chromerpc(binp, port, tmpdir=None)
+    print("[chromerpc] no prebuilt binary found — cloning + building from source.")
+    built = _clone_and_build_chromerpc()
+    if not built:
+        print("[chromerpc] could not obtain a binary — Zumper detail, the CL contact "
+              "fetch, and the manual Zillow/Apartments gather all need it.", file=sys.stderr)
+        return False
+    binpath, tmpdir = built
+    return _launch_chromerpc(binpath, port, tmpdir=tmpdir)
+
+
+def teardown_chromerpc() -> None:
+    """Stop the chromerpc WE launched and delete the temp clone we built. Reads the
+    runtime-state file written at launch. OS-independent: process-group kill on
+    POSIX, taskkill /T on Windows. A no-op if we never launched one."""
+    try:
+        with open(CHROMERPC_STATE) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        print("[chromerpc] no runtime state — nothing to tear down.")
+        return
+    pid, tmpdir = state.get("pid"), state.get("tmpdir")
+    if pid:
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                # start_new_session made the child its own process-group leader.
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            print(f"[chromerpc] stopped pid {pid}.")
+        except (ProcessLookupError, PermissionError, OSError) as e:
+            print(f"[chromerpc] process {pid} already gone ({e}).")
+    if tmpdir and os.path.isdir(tmpdir):
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        print(f"[chromerpc] deleted temp clone {tmpdir}.")
+    try:
+        os.remove(CHROMERPC_STATE)
+    except OSError:
+        pass
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Incremental refresh of the pipeline.")
-    ap.add_argument("--no-zillow", action="store_true", help="skip the Zillow pull")
-    ap.add_argument("--no-apartments", action="store_true", help="skip the Apartments.com pull")
+    ap = argparse.ArgumentParser(description="Incremental refresh of the pipeline "
+                                 "(Craigslist + Zumper; Zillow/Apartments are manual).")
     ap.add_argument("--no-browser", action="store_true",
-                    help="don't auto-launch chromerpc (assume it's already running, or skip "
-                         "browser-backed sources)")
-    ap.add_argument("--force-zillow", action="store_true",
-                    help="(deprecated no-op: Zillow is now free via chromerpc, runs every refresh)")
+                    help="don't auto-launch chromerpc (assume it's already running)")
+    ap.add_argument("--teardown-chromerpc", action="store_true",
+                    help="stop the chromerpc we launched + delete its temp clone, then exit. "
+                         "Run this AFTER all stages finish (it's a no-op if we didn't launch one).")
     args = ap.parse_args()
 
-    # Headful chromerpc backs Zumper + Zillow + Apartments (all bot-walled against
-    # headless) and the CL contact fetch. Bring it up before the source pulls.
+    if args.teardown_chromerpc:
+        teardown_chromerpc()
+        return
+
+    # Headful chromerpc backs Zumper detail, the CL contact fetch, and the LLM's
+    # MANUAL Zillow/Apartments gather (all bot-walled against headless). Bring it up
+    # before the pulls. When no prebuilt binary exists it is cloned + built from
+    # source into an OS temp dir; tear it down at the very end with --teardown-chromerpc.
     if not args.no_browser:
         ensure_chromerpc()
 
     for label, a in PRE_STEPS:
         run(label, a)
-
-    if args.no_zillow:
-        print(f"\n{'='*70}\n>> Zillow pull — SKIPPED (--no-zillow)\n{'='*70}")
-    else:
-        run(*ZILLOW_STEP)
-
-    if args.no_apartments:
-        print(f"\n{'='*70}\n>> Apartments.com pull — SKIPPED (--no-apartments)\n{'='*70}")
-    else:
-        run(*APARTMENTS_STEP)
 
     sys.path.insert(0, os.path.join(ROOT, "scripts"))
     import db  # noqa: E402
@@ -189,8 +302,11 @@ def main():
     last = db.get_meta(conn, "last_pull")
     conn.close()
 
-    print(f"\n{'='*70}\nREFRESH COMPLETE — last pull {last}")
+    print(f"\n{'='*70}\nREFRESH COMPLETE (Craigslist + Zumper) — last pull {last}")
     print(f"{to_vet} new listing(s) awaiting vetting.")
+    print("MANUAL STEP: now gather today's Zillow + Apartments.com listings BY HAND "
+          "via headful chromerpc — NO scripts. See MANUAL_SOURCES.md. (chromerpc is "
+          "up; run scripts/refresh.py --teardown-chromerpc when ALL stages are done.)")
     if to_vet:
         print("Next (Claude): (1) fill any market buckets research.py flagged "
               "(market_comps.py set …); (2) re-run research.py --all-new so ranges "
