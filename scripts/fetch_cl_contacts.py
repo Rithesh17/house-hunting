@@ -17,7 +17,8 @@ its visible text), human-clicks it, and reads what surfaces.
 IMPORTANT: ONE pass per listing. Craigslist throttles repeated reply requests from
 one IP. We skip already-fetched listings (unless --force) and space requests out.
 
-Prereq — run chromerpc locally first (HEADFUL recommended):
+Prereq — run chromerpc locally first (HEADFUL recommended). Use your OWN instance
+when other agents are running (set CHROMERPC_ADDR=localhost:<port> to match):
     cd chromerpc && ./bin/chromerpc -headless=false -addr :50051 &
 
     python3 scripts/fetch_cl_contacts.py --all-vetted
@@ -45,7 +46,11 @@ _EXT_RE = re.compile(r"\b(?:ext\.?|x)\s*\d{1,5}\b|\btext\s+\d{1,5}\s+to\b", re.I
 
 import db
 
-GRPC = "localhost:50051"
+# The chromerpc CDP address. Defaults to the shared :50051, but ANY run can point
+# at its own private instance via CHROMERPC_ADDR (e.g. localhost:50071) so parallel
+# agents don't drive each other's browser. fetch_zumper routes through cr._call too,
+# so this one override covers Zumper detail + CL contact fetch + Stage-3 flagging.
+GRPC = os.getenv("CHROMERPC_ADDR", "localhost:50051")
 
 
 def _grpcurl_bin() -> str:
@@ -69,15 +74,35 @@ _GRPCURL = _grpcurl_bin()
 # ---- chromerpc raw-CDP helpers -------------------------------------------------
 def _call(method: str, payload: dict) -> dict:
     cmd = [_GRPCURL, "-plaintext", "-max-time", "40", "-d", json.dumps(payload), GRPC, method]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    # Force UTF-8 decoding: grpcurl emits UTF-8 JSON, but Windows subprocess defaults
+    # to cp1252 and blows up on page HTML bytes (0x90 etc). errors='replace' keeps
+    # DOM reads from crashing the whole run on one odd character.
+    r = subprocess.run(cmd, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     try:
         return json.loads(r.stdout)
     except Exception:
-        return {"_err": (r.stderr or r.stdout)[:160]}
+        return {"_err": ((r.stderr or r.stdout) or "")[:160]}
 
 
 def navigate(url: str):
     _call("cdp.page.PageService/Navigate", {"url": url})
+
+
+def screenshot(path: str) -> bool:
+    """Save a PNG screenshot of the current page (chromerpc CaptureScreenshot, no JS).
+    Used to eyeball every manual step (contact fetch + Stage-3 flagging)."""
+    import base64
+    r = _call("cdp.page.PageService/CaptureScreenshot", {"format": "SCREENSHOT_FORMAT_PNG"})
+    data = _g(r, "data")
+    if not data:
+        return False
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(base64.b64decode(data))
+    return True
 
 
 # ---- human input (real mouse, no JS) -------------------------------------------
@@ -471,7 +496,8 @@ def main() -> None:
     # chromerpc reachable? (CDP DOM call, no JS)
     if "_err" in _call("cdp.dom.DOMService/GetDocument", {"depth": 0}):
         raise SystemExit("chromerpc not reachable on " + GRPC +
-                         " — start it: cd chromerpc && ./bin/chromerpc -headless=false -addr :50051 &")
+                         " (override with CHROMERPC_ADDR) — start it: "
+                         "cd chromerpc && ./bin/chromerpc -headless=false -addr :50051 &")
 
     conn = db.connect()
     targets = _targets(conn, args)

@@ -149,9 +149,8 @@ _PHONE_RE = re.compile(r"\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?:\s*(?:ext\.?|x)\s*\
 def _chromerpc_ready() -> bool:
     try:
         import fetch_cl_contacts as cr
-        return "_err" not in cr._call(
-            "cdp.runtime.RuntimeService/Evaluate",
-            {"expression": "1", "return_by_value": True})
+        # DOM liveness probe (no page JS) — matches the no-Runtime.Evaluate rule.
+        return "_err" not in cr._call("cdp.dom.DOMService/GetDocument", {"depth": 0})
     except Exception:
         return False
 
@@ -224,18 +223,20 @@ def chromerpc_zumper_detail(url: str) -> dict | None:
                  {"width": 1440, "height": 1200, "deviceScaleFactor": 1, "mobile": False})
         cr.navigate(url)
         time.sleep(6)
-        H = cr.ev("document.body.scrollHeight") or 6000
-        for _ in range(3):                          # scroll-load until lazy sections settle
-            for y in range(0, int(H) + 800, 500):
-                cr.ev(f"window.scrollTo(0,{y})")
-                time.sleep(0.45)
-            if not cr.ev("(document.body.innerText.match(/One sec, gathering/g)||[]).length"):
+        # Scroll-load every lazy section with REAL wheel events (no page JS — the old
+        # cr.ev() JS-eval path was both a THUMB_RULES violation and dead code) and read
+        # content through the CDP DOM, exactly like the CL contact fetch. Wheel down the
+        # page a few passes until Zumper's "One sec, gathering…" placeholders stop.
+        for _ in range(4):
+            for _i in range(16):
+                cr._mouse("mouseWheel", 720, 620, deltaX=0, deltaY=650)
+                time.sleep(0.4)
+            if "one sec, gathering" not in cr._page_text().lower():
                 break
-            H = cr.ev("document.body.scrollHeight") or H
-        cr.ev("window.scrollTo(0,0)")
-        time.sleep(0.4)
-        html = cr.ev("document.documentElement.outerHTML") or ""
-        text = cr.ev("document.body.innerText") or ""
+        cr._mouse("mouseWheel", 720, 620, deltaX=0, deltaY=-14000)  # back to top
+        time.sleep(0.5)
+        html = cr._outer(cr._doc_root()) or ""
+        text = "\n".join(ln for ln in cr._page_lines() if ln)
     except Exception as e:
         print(f"  ! chromerpc zumper detail failed for {url}: {e}", file=sys.stderr)
         return None

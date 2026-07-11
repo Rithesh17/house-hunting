@@ -97,11 +97,32 @@ POST_STEPS = [
 ]
 
 
-def run(label, args):
-    print(f"\n{'='*70}\n>> {label}\n{'='*70}")
-    r = subprocess.run([PY, *args], cwd=ROOT)
+def _ts() -> str:
+    return time.strftime("%H:%M:%S")
+
+
+def _hms(secs: float) -> str:
+    secs = int(secs)
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    return (f"{h}h{m:02d}m{s:02d}s" if h else f"{m}m{s:02d}s" if m else f"{s}s")
+
+
+def run(label, args, idx=None, total=None):
+    """Run one pipeline step as a child process, streaming its output live with a
+    timestamped banner and an elapsed-time / exit-status footer. Child stdout is
+    forced unbuffered (PYTHONUNBUFFERED) so per-listing progress appears in real
+    time instead of arriving in one buffered dump at the end."""
+    tag = f"[{idx}/{total}] " if idx and total else ""
+    print(f"\n{'='*70}\n>> {tag}{label}  (started {_ts()})\n{'='*70}", flush=True)
+    t0 = time.time()
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    r = subprocess.run([PY, "-u", *args], cwd=ROOT, env=env)
+    dt = _hms(time.time() - t0)
     if r.returncode != 0:
-        print(f"  ! step '{label}' exited {r.returncode}", file=sys.stderr)
+        print(f"  ! step '{label}' exited {r.returncode} after {dt}", file=sys.stderr, flush=True)
+    else:
+        print(f"-- done: {label}  ({dt}, exit 0)", flush=True)
 
 
 def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -209,7 +230,19 @@ def _launch_chromerpc(binp: str, port: int, tmpdir: str | None) -> bool:
     return False
 
 
-def ensure_chromerpc(port: int = 50051) -> bool:
+def _chromerpc_port() -> int:
+    """Port for our chromerpc. CHROMERPC_ADDR (e.g. localhost:50071) lets a run drive
+    its OWN private instance so parallel agents don't share one browser; else :50051."""
+    addr = os.getenv("CHROMERPC_ADDR", "")
+    if ":" in addr:
+        try:
+            return int(addr.rsplit(":", 1)[1])
+        except ValueError:
+            pass
+    return 50051
+
+
+def ensure_chromerpc(port: int | None = None) -> bool:
     """Make sure a HEADFUL chromerpc is listening on :port (Zumper/Zillow/Apartments
     + CL-contact all need it; Zillow & Apartments are bot-walled against headless).
 
@@ -219,6 +252,8 @@ def ensure_chromerpc(port: int = 50051) -> bool:
     contained, no prior install). What we launch is recorded so
     teardown_chromerpc() can stop it and delete the temp clone after every stage.
     Returns True if reachable."""
+    if port is None:
+        port = _chromerpc_port()
     if _port_open("127.0.0.1", port):
         print(f"[chromerpc] already up on :{port}")
         return True
@@ -284,16 +319,26 @@ def main():
     # MANUAL Zillow/Apartments gather (all bot-walled against headless). Bring it up
     # before the pulls. When no prebuilt binary exists it is cloned + built from
     # source into an OS temp dir; tear it down at the very end with --teardown-chromerpc.
+    run_t0 = time.time()
+    total = len(PRE_STEPS) + len(POST_STEPS)
+    print(f"{'#'*70}\n# REFRESH START {time.strftime('%Y-%m-%d %H:%M:%S')} "
+          f"— {total} steps (Craigslist + Zumper; Zillow/Apartments are manual)\n{'#'*70}",
+          flush=True)
+
     if not args.no_browser:
+        print(f"\n>> [0] chromerpc bring-up  (started {_ts()})", flush=True)
         ensure_chromerpc()
 
+    step = 0
     for label, a in PRE_STEPS:
-        run(label, a)
+        step += 1
+        run(label, a, step, total)
 
     sys.path.insert(0, os.path.join(ROOT, "scripts"))
     import db  # noqa: E402
     for label, a in POST_STEPS:
-        run(label, a)
+        step += 1
+        run(label, a, step, total)
 
     conn = db.connect()
     to_vet = conn.execute(
@@ -303,6 +348,7 @@ def main():
     conn.close()
 
     print(f"\n{'='*70}\nREFRESH COMPLETE (Craigslist + Zumper) — last pull {last}")
+    print(f"Total wall time: {_hms(time.time() - run_t0)} across {total} steps.")
     print(f"{to_vet} new listing(s) awaiting vetting.")
     print("MANUAL STEP: now gather today's Zillow + Apartments.com listings BY HAND "
           "via headful chromerpc — NO scripts. See MANUAL_SOURCES.md. (chromerpc is "

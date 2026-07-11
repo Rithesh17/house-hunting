@@ -176,16 +176,48 @@ This is the full cycle. Run it end to end:
 3. `py tools/apply_verdicts.py` (merges the batch files; reject rooms/etc., keep
    scams flagged), then delete the batch files.
 4. `py tools/dedup.py` (re-cluster with the new verdicts so primaries are best).
+4a. **Stage 3 — FLAG confirmed scams on Craigslist (MANUAL, headful, NO scripts).**
+   For every **Craigslist** row this run confirmed as a scam (verdict
+   `legit_label == "likely-scam"`, OR a `disposition:"reject"` whose reason is a scam
+   tell — cloned/undercut, stolen photos, off-platform+fee, fake license), YOU (the
+   LLM) drive chromerpc to click the post's **flag** link by hand — one post at a time,
+   screenshotting every step. This MUST happen **before** step 4b (purge deletes the
+   scam rows). **STRICTLY NO automation script** and **NO page JS / DOM interaction** —
+   exactly like the manual Zillow/Apartments gather. Reuse the Stage-1 chromerpc
+   primitives (`scripts/fetch_cl_contacts.py`: `navigate`, `warmup`, `human_click`,
+   `screenshot`, the CDP-DOM readers) from one-off `py -c` calls, deciding each next
+   action from the screenshot. **Use your OWN chromerpc instance** (parallel agents
+   share `:50051` — never drive their browser): launch a private headful instance on a
+   spare port and set `CHROMERPC_ADDR=localhost:<port>` (e.g. 50071) for every call, and
+   in Python `import fetch_cl_contacts as F; F.GRPC='localhost:<port>'`. Flag flow per
+   post: `navigate(url)` → wait → `warmup()` → `screenshot` (confirm it's the right,
+   still-live post) → locate `div.flag[role=button]` via CDP DOM and read its box-model
+   center (**AVOID `div.banish`** — that's "hide this posting", NOT a flag) →
+   `human_click` that center → verify success: `div.flag` loses its box model AND
+   `div.unflag` ("flagged") gains one, and the toolbar screenshot shows a solid ⚑ +
+   purple "flagged". CL flagging is a **single click** (no reason submenu — the reasons
+   live only in the tooltip). Space posts out; don't hammer. Tear down ONLY your own
+   instance afterward (never `refresh.py --teardown-chromerpc`, which stops the shared
+   one). Non-CL scams (Zillow/Apartments) are out of scope — CL is the only flaggable
+   source here.
 4b. `py tools/purge_db.py --execute` — DELETE rejected/removed + low-trust(<40) +
    unsafe-area rows (blocklisted so they don't re-surface), keeping ok-area trust≥40.
    Keeps the DB + dashboard to only what's worth seeing.
 4c. **Stage-1 contact-fetch (ALL kept CL, not just the ones we email).**
    `py scripts/fetch_cl_contacts.py --all-vetted` — once vetting has settled the good
    listings, grab the reply relay (+ any phone) for EVERY surviving `vetted`
-   Craigslist row so the dashboard carries contact info for all of them. Needs
-   chromerpc on :50051; CL throttles repeated reply requests, so a big batch may only
-   resolve some — the unfetched rows are reselected on a later run. (Stage 2 then just
-   DECIDES which of these already-contactable picks to email — it does NOT fetch.)
+   Craigslist row so the dashboard carries contact info for all of them. It already
+   drives chromerpc **like a human — real Bézier mouse + no page JS**, reading the DOM
+   only to locate elements. Two rules to avoid the blocks we hit before: (1) run it on
+   **YOUR OWN chromerpc instance** — set `CHROMERPC_ADDR=localhost:<port>` — never the
+   shared `:50051` (parallel agents drive it, and reading a co-tenant's tab both
+   corrupts your reads and looks bot-like); (2) **ONE pass per listing, spaced out**
+   (`--delay`), never re-hammer. CL throttles repeated reply requests, so a big batch
+   may only resolve some — the unfetched rows are reselected on a later run; for a
+   stubborn few, reveal them **by hand** with the same primitives (`navigate` →
+   `warmup` → human-click `button.reply-button` → read the panel) rather than re-running
+   the batch. (Stage 2 then just DECIDES which of these already-contactable picks to
+   email — it does NOT fetch.)
 5. `py scripts/sync_supabase.py` — **publish to the cloud** so the public
    dashboard updates (re-run after vetting/purge so new scores/dedup land + purged
    rows drop). `refresh.py` already runs this once at the end; run it again here.
@@ -466,8 +498,11 @@ placeholder), `price` (the real MONTHLY number; normalize any weekly/nightly quo
 `sqft` (estimate from photos if absent), `address`, `neighborhood`. `apply_verdicts.py`
 writes these as the canonical row. Allowed keys: title, price, bedrooms, bathrooms,
 sqft, room_type, housing_type, area, neighborhood, address, lat, lng. Fill every key
-you can determine; only omit one you genuinely cannot (e.g. an undisclosed address —
-for which you should `disposition:"reject"`, `reject_reason:"undisclosed address"`).
+you can determine; simply omit one you genuinely cannot (e.g. an undisclosed
+address — that is FINE, **a missing/undisclosed address is NOT a reject reason** on
+its own; keep the listing and leave `address` unset. Many legit posts (in-law units,
+privacy-minded owners) withhold the exact street until contact — surface them, and
+just ask for the address when reaching out).
 If the true MONTHLY price exceeds the $2,000 cap, also set `disposition:"reject"`,
 `reject_reason:"over $2000/mo cap"`. Changing area/address/coords re-classifies
 avoid/caution/ok at sync time. Scoring rules are unchanged. **See `OUTREACH.md`** for
