@@ -116,7 +116,12 @@ def run(label, args, idx=None, total=None):
     tag = f"[{idx}/{total}] " if idx and total else ""
     print(f"\n{'='*70}\n>> {tag}{label}  (started {_ts()})\n{'='*70}", flush=True)
     t0 = time.time()
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    # PYTHONUNBUFFERED: per-listing progress streams live, not one buffered dump.
+    # PYTHONUTF8: force UTF-8 stdout in every child. Without it, Windows' default
+    # cp1252 console codec raises UnicodeEncodeError the moment a step prints a
+    # non-latin glyph (e.g. research.py's ✓/✗ status marks), which previously
+    # crashed the research-bundle step mid-run and left listings without bundles.
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1"}
     r = subprocess.run([PY, "-u", *args], cwd=ROOT, env=env)
     dt = _hms(time.time() - t0)
     if r.returncode != 0:

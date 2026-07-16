@@ -248,8 +248,15 @@ def main() -> None:
     label = ("safe near-BART Berkeley (East Bay)" if args.region == "eby"
              else "all of SF")
     print(f"[broad pass] {label}, price-capped, office/parking excluded:")
+    # Watermark = the instant BEFORE the pass begins (run start), NOT db.now()
+    # after it finishes. The fetch runs at the very START of a refresh, so
+    # stamping the start guarantees the NEXT run reads back to THIS run's
+    # start-of-fetch → now with zero gap — a post made DURING this run's later
+    # stages is still caught next time. Stamping after the pass would silently
+    # skip that window.
+    pull_started = db.now()
     total_new = run_pass(conn, cfg, area_filter, args.region)
-    db.set_meta(conn, meta_key, db.now())
+    db.set_meta(conn, meta_key, pull_started)
     conn.commit()
     conn.close()
 

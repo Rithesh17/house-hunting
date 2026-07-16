@@ -146,15 +146,6 @@ _AGE_RE = re.compile(r"(\d+)\+?\s*(hour|day|week|month)s?\s*ago", re.I)
 _PHONE_RE = re.compile(r"\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?:\s*(?:ext\.?|x)\s*\d+)?", re.I)
 
 
-def _chromerpc_ready() -> bool:
-    try:
-        import fetch_cl_contacts as cr
-        # DOM liveness probe (no page JS) — matches the no-Runtime.Evaluate rule.
-        return "_err" not in cr._call("cdp.dom.DOMService/GetDocument", {"depth": 0})
-    except Exception:
-        return False
-
-
 def _age_to_iso(text: str) -> str | None:
     if re.search(r"\b(today|just posted)\b", text, re.I):
         return db.now()
@@ -210,126 +201,32 @@ def _contact_from_text(text: str) -> dict:
     return out
 
 
-def chromerpc_zumper_detail(url: str) -> dict | None:
-    """Render the full Zumper listing via chromerpc (scroll to load every lazy
-    section) and extract {description, posted_at, contact_name, phone,
-    contact_details}. Returns None if chromerpc isn't reachable on :50051."""
-    import time
-    import fetch_cl_contacts as cr
-    if not _chromerpc_ready():
-        return None
-    try:
-        cr._call("cdp.emulation.EmulationService/SetDeviceMetricsOverride",
-                 {"width": 1440, "height": 1200, "deviceScaleFactor": 1, "mobile": False})
-        cr.navigate(url)
-        time.sleep(6)
-        # Scroll-load every lazy section with REAL wheel events (no page JS — the old
-        # cr.ev() JS-eval path was both a THUMB_RULES violation and dead code) and read
-        # content through the CDP DOM, exactly like the CL contact fetch. Wheel down the
-        # page a few passes until Zumper's "One sec, gathering…" placeholders stop.
-        for _ in range(4):
-            for _i in range(16):
-                cr._mouse("mouseWheel", 720, 620, deltaX=0, deltaY=650)
-                time.sleep(0.4)
-            if "one sec, gathering" not in cr._page_text().lower():
-                break
-        cr._mouse("mouseWheel", 720, 620, deltaX=0, deltaY=-14000)  # back to top
-        time.sleep(0.5)
-        html = cr._outer(cr._doc_root()) or ""
-        text = "\n".join(ln for ln in cr._page_lines() if ln)
-    except Exception as e:
-        print(f"  ! chromerpc zumper detail failed for {url}: {e}", file=sys.stderr)
-        return None
-    out = {"description": _about_from_text(text) or extract_description(html),
-           "posted_at": _age_to_iso(text)}
-    out.update(_contact_from_text(text))
-    return out
+# NOTE: the old chromerpc_zumper_detail() auto-driver and the Playwright
+# DescriptionFetcher were REMOVED — no browser is auto-driven for Zumper anymore.
+# Each new Zumper listing's body/posted-age/contact is gathered BY HAND via chromerpc
+# (manual detail pass, like Zillow/Apartments — see MANUAL_SOURCES.md). When you read
+# a hand-gathered page's text/HTML, the parsers above (_about_from_text, _age_to_iso,
+# _contact_from_text, extract_description) are still here to help you turn it into
+# {description, posted_at, contact_name, phone} before you write the enrich fields.
+def pull_region(conn, cfg, region_key, sess) -> int:
+    """Pull one region's pins (SF or Berkeley) and insert new ones. Returns count.
 
-
-class DescriptionFetcher:
-    """Lazily-started headless browser that reads one listing description at a
-    time, reusing a single page (keeps the challenge cookie warm). Degrades to
-    a no-op if Playwright/Chromium isn't available — the pipeline still runs,
-    listings just keep description=None."""
-
-    def __init__(self):
-        self._pw = None
-        self._browser = None
-        self._page = None
-        self.enabled = True
-
-    def _ensure(self) -> bool:
-        if self._page is not None:
-            return True
-        if not self.enabled:
-            return False
-        try:
-            from playwright.sync_api import sync_playwright
-            self._pw = sync_playwright().start()
-            self._browser = self._pw.chromium.launch(headless=True)
-            self._page = self._browser.new_page()
-            return True
-        except Exception as e:  # missing browser, launch failure, etc.
-            print(f"  ! Zumper descriptions disabled (headless browser "
-                  f"unavailable: {e})", file=sys.stderr)
-            self.enabled = False
-            return False
-
-    def fetch(self, url: str) -> str | None:
-        if not url or not self._ensure():
-            return None
-        try:
-            self._page.goto(url, timeout=60000, wait_until="domcontentloaded")
-            for _ in range(8):  # poll while the JS challenge resolves
-                self._page.wait_for_timeout(1500)
-                desc = extract_description(self._page.content())
-                if desc:
-                    return desc
-            # Some listings keep the body only in the rendered "About" section
-            # (not ld+json), lazy-loaded on scroll — fall back to that.
-            return self._about_text()
-        except Exception as e:
-            print(f"  ! description fetch failed for {url}: {e}",
-                  file=sys.stderr)
-        return None
-
-    def _about_text(self) -> str | None:
-        """Read the body paragraph(s) from the rendered #about section. The
-        section lazy-loads ("One sec, gathering the property details") once
-        scrolled into view, so we scroll then poll its <p> elements (which hold
-        the real body, excluding the heading/price chrome)."""
-        try:
-            self._page.locator("#about").scroll_into_view_if_needed(timeout=8000)
-        except Exception:
-            pass
-        for _ in range(8):
-            self._page.wait_for_timeout(1500)
-            try:
-                ps = self._page.locator("#about p")
-                parts = [ps.nth(i).inner_text().strip()
-                         for i in range(ps.count())]
-            except Exception:
-                continue
-            body = "\n\n".join(p for p in parts if p)
-            if len(body) >= 60:
-                return body
-        return None
-
-    def close(self):
-        try:
-            if self._browser:
-                self._browser.close()
-            if self._pw:
-                self._pw.stop()
-        except Exception:
-            pass
-
-
-def pull_region(conn, cfg, region_key, sess, descf, use_cr) -> int:
-    """Pull one region's pins (SF or Berkeley) and insert new ones. Returns count."""
+    Inserts map-API STUBS only (coords + price + photos + raw fields). The listing
+    BODY / posted age / contact are NOT auto-driven anymore — like Zillow and
+    Apartments.com, each new Zumper listing's detail page is gathered BY HAND by the
+    LLM via chromerpc (see MANUAL_SOURCES.md 'BROWSER = MANUAL, ALWAYS'). So rows
+    land with description=None and must have the body read by hand before the
+    SHARED-ROOM GATE can be trusted."""
     reg = REGIONS[region_key]
     max_price = cfg["max_price"]
     s = zsession(reg["page"])
+
+    # Watermark = the instant BEFORE this pass begins (run start), NOT db.now()
+    # after it. Fetch runs at the very START of a refresh; stamping the start
+    # guarantees the NEXT run reads back to THIS run's start-of-fetch with zero
+    # gap — so a listing posted DURING this run's later stages is still caught
+    # next time. Stamping after the pass would silently skip that window.
+    pull_started = db.now()
 
     print(f"[zumper] pulling {reg['label']} pins (recursive box subdivision)...")
     pins: list = []
@@ -364,11 +261,10 @@ def pull_region(conn, cfg, region_key, sess, descf, use_cr) -> int:
         # download images transiently for vetting
         dl_urls = [f"https://img.zumpercdn.com/{i}/1280x960" for i in image_ids]
         image_dir, image_count = fetch_detail.download_images(sess, pid, dl_urls)
-        # Full-page detail so the SHARED-ROOM GATE works: chromerpc renders the
-        # body + contact (preferred); else the dead Playwright path -> None.
-        detail = chromerpc_zumper_detail(url) if use_cr else None
-        if detail is None:
-            detail = {"description": descf.fetch(url)}
+        # NO auto browser drive. The body/contact/posted-age are gathered BY HAND
+        # later (manual chromerpc detail pass, like Zillow/Apartments) — the map API
+        # has no description, so this stub lands with description=None until then.
+        detail = {"description": None}
         raw = {
             "building_name": p.get("building_name"),
             "address": p.get("address"),
@@ -393,7 +289,7 @@ def pull_region(conn, cfg, region_key, sess, descf, use_cr) -> int:
         conn.commit()
         new += 1
 
-    db.set_meta(conn, reg["meta_key"], db.now())
+    db.set_meta(conn, reg["meta_key"], pull_started)
     conn.commit()
     print(f"  {new} new Zumper listings <= ${max_price} in {reg['label']} "
           f"(status='new', ready to vet).")
@@ -412,18 +308,16 @@ def main() -> None:
     cfg = common.load_config()
     conn = db.connect()
     sess = common.session(cfg)         # for image downloads
-    descf = DescriptionFetcher()       # fallback (Playwright; usually a no-op here)
-    use_cr = _chromerpc_ready()
-    print("[zumper] detail via " + ("chromerpc full-page render (description + contact)"
-          if use_cr else "Playwright fallback (likely description=None)"))
+    print("[zumper] map-API stubs only — listing bodies/contacts are gathered BY HAND "
+          "via chromerpc (manual detail pass), like Zillow/Apartments.")
 
     total = 0
     for rk in regions:
-        total += pull_region(conn, cfg, rk, sess, descf, use_cr)
+        total += pull_region(conn, cfg, rk, sess)
 
-    descf.close()
     conn.close()
-    print(f"\n{total} new Zumper listings added across {', '.join(regions)}.")
+    print(f"\n{total} new Zumper listings added across {', '.join(regions)} "
+          f"(description=None — gather each body BY HAND before vetting).")
 
 
 if __name__ == "__main__":

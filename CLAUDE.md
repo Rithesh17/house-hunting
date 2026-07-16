@@ -17,6 +17,34 @@ mechanical work and personally do the **vision vetting + fit ranking**.
 > the `new → vetted → contacted → interested` status model, and the single combined
 > Telegram digest. The refresh cron runs it when enabled.
 
+## BROWSER = MANUAL, ALWAYS (no scripts, no DOM interaction — hard rule)
+**EVERY browser interaction with a listing site is done BY HAND by you (the LLM in
+the main loop), one chromerpc action at a time. There is NO automation script for any
+of it, and you must never write, restore, or spawn a subagent to run one.** This
+covers ALL of it — Craigslist contact reveal, Craigslist Stage-3 scam flagging, and
+the Zillow / Apartments.com / **Zumper** detail gathering. (A batch loop over CL reply
+requests is precisely what got the IP bot-flagged; the same risk applies everywhere.)
+- **Interact ONLY through chromerpc's Input gRPC** — real mouse moves/clicks along
+  human Bézier paths and wheel/scroll gestures. **NEVER** a DOM/JS click, focus, or
+  synthetic event, and **NEVER `Runtime.Evaluate` / any page JS.** Drive like a person.
+- **Read ONLY through the CDP DOM domain** — GetBoxModel to LOCATE a click point,
+  QuerySelectorAll / GetOuterHTML to EXTRACT text/links, parsed in Python. Reading the
+  DOM is fine; *interacting* through it is not.
+- **Screenshot after every step** (`CaptureScreenshot`) and actually look at it. On ANY
+  blocker (throttle, captcha, "flagged for removal", empty page, moved element) STOP,
+  screenshot, diagnose from the picture, and decide the next single action by hand —
+  never retry blindly in a loop.
+- **Compose the primitives yourself, one call per step.** `scripts/fetch_cl_contacts.py`
+  is now a PRIMITIVES-ONLY module (`navigate`, `warmup`, `screenshot`, `human_click`,
+  `_center`, `_qs/_qsa/_outer`, `_read_reply_panel`, `reveal_in_body`, …) with **no
+  `main`, no CLI, no batch loop** — `import fetch_cl_contacts as F` and issue each
+  action. It is intentionally NOT runnable; do not re-add a loop.
+- **Go slow and human, ONE pass per listing.** Warm up, pause between actions, space
+  listings out. Craigslist throttles repeated reply requests per IP — if it throttles
+  (`F._reply_uninit()` true / no reply token), stop and pick it up on a later run; the
+  unfetched rows are reselected next time. Store what you get yourself
+  (`db.update_detail(conn, pid, dict(reply_email=…, phone=…, contact_name=…))`).
+
 ## The user's criteria (the bar every listing is measured against)
 - **Budget:** hard cap **$2,000/month**.
 - **Type:** **1 bed / 1 bath AND 2+ bedroom whole units (houses/flats) are BOTH
@@ -106,24 +134,24 @@ Craigslist,"* *"any new places today?"* — run the pipeline below end to end.
   (POST `/api/svc/inventory/v1/listables/maplist/pins`, recursive box subdivide),
   filters to ≤ max_price, inserts `source='zumper'` rows ready to vet. Zumper
   image URLs MUST be `https://img.zumpercdn.com/<id>/1280x960?dpr=1&fit=crop&h=542&q=76&w=991`
-  (bare sizes 404); embed with `referrerpolicy="no-referrer"`. The map API has NO
-  description, and detail pages render client-side + lazy-load on scroll, so for
-  each new listing the script drives **chromerpc** (`chromerpc_zumper_detail`):
-  navigate → scroll-load every section → read the **ABOUT body** + posted age +
-  best-effort **contact** (name/routed phone/extension, scanned anywhere on the
-  page since Zumper places it inconsistently). This is essential: Zumper tags
-  room-shares as "1 bedroom", so without the body a private-room-in-a-shared-unit
-  is indistinguishable from a real 1BR — photos-only vetting WILL false-positive
-  them (see the SHARED-ROOM GATE). The body also yields a posted date, so Zumper
-  rows become recency-scopable. Prereq: chromerpc on :50051 (the refresh cron
-  starts it). If chromerpc is down it falls back to the old Playwright path
-  (`DescriptionFetcher`, usually a no-op here) → `description=None`; pipeline
-  still runs but room-shares can't be caught from the body that run.
+  (bare sizes 404); embed with `referrerpolicy="no-referrer"`. **The map API has NO
+  description, and the script NO LONGER auto-drives the detail page** (the old
+  `chromerpc_zumper_detail` auto-driver + Playwright `DescriptionFetcher` were
+  **removed**). So `fetch_zumper.py` inserts map-API **stubs only** — coords + price +
+  photos + raw fields, `description=None`. Per **BROWSER = MANUAL, ALWAYS**, you gather
+  each new Zumper listing's **body + posted age + contact BY HAND** via chromerpc
+  (manual detail pass, exactly like Zillow/Apartments — see `MANUAL_SOURCES.md`), then
+  author its enrich fields. This is essential: Zumper tags room-shares as "1 bedroom",
+  so without the hand-read body a private-room-in-a-shared-unit is indistinguishable
+  from a real 1BR — photos-only vetting WILL false-positive them (see the SHARED-ROOM
+  GATE). The text-parsers `_about_from_text` / `_age_to_iso` / `_contact_from_text` /
+  `extract_description` remain in `fetch_zumper.py` to help you turn the page text you
+  read by hand into `{description, posted_at, contact}`.
 - **Zillow + Apartments.com** — **NOT scripted. Gathered BY HAND by the LLM** through
   headful chromerpc every run (after `refresh.py`, before vetting). There is no
   scraper for either and you must not write one or delegate to a subagent —
-  **see `MANUAL_SOURCES.md`** for the full how-to and the hard "no script" rule. Both
-  are bot-walled (Zillow PerimeterX, Apartments Akamai) and brittle to scrape, and
+  **see `MANUAL_SOURCES.md`** and **BROWSER = MANUAL, ALWAYS** above. Both are
+  bot-walled (Zillow PerimeterX, Apartments Akamai) and brittle to scrape, and
   filtered to ≤cap + last-24h they're only a handful of posts/day — cheaper and more
   reliable to read by hand. The old `fetch_zillow_cr.py` / `fetch_apartments_cr.py` /
   Apify `fetch_zillow.py` were **deleted** for this reason (the Zillow one had already
@@ -139,21 +167,30 @@ price + room_type) into one tile; the dossier lists each source's link.
 This is the full cycle. Run it end to end:
 1. `py scripts/refresh.py` — does the deterministic plumbing incrementally:
    **launch headful chromerpc (auto)** + **hydrate local DB from Supabase** +
-   Craigslist pull + Zumper pull + detail/photos/gates + prune dead links + dedupe +
-   **Stage-2 research bundles** (`scripts/research.py --all-new` →
-   `data/research/<id>.json`). It prints how many NEW listings need vetting AND which
-   market buckets need a web lookup. **It does NOT pull Zillow or Apartments** — those
-   are gathered BY HAND next (step 1b). refresh.py auto-launches chromerpc headful if
+   Craigslist pull + Zumper pull (**map-API stubs only, `description=None`**) +
+   detail/photos/gates + prune dead links + dedupe + **Stage-2 research bundles**
+   (`scripts/research.py --all-new` → `data/research/<id>.json`). It prints how many
+   NEW listings need vetting AND which market buckets need a web lookup. **It does NOT
+   pull Zillow or Apartments, and no longer auto-drives Zumper detail** — those are all
+   gathered BY HAND next (steps 1b–1c). refresh.py auto-launches chromerpc headful if
    it's not already on :50051 (it self-clones+builds chromerpc if no binary is found;
    `CHROME_BIN` in `.env` overrides Chrome detection); headful is REQUIRED — chromerpc
-   backs Zumper detail, the CL contact fetch, and the manual gather. `--no-browser`
-   skips the auto-launch.
+   backs the by-hand Zumper/Zillow/Apartments detail gather, the CL contact reveal, and
+   Stage-3 flagging. `--no-browser` skips the auto-launch.
 1b. **Manual Zillow + Apartments.com gather — BY HAND, NO scripts** (see
-   `MANUAL_SOURCES.md`). With chromerpc up, you (the LLM) open both sites yourself for
-   SF + Berkeley, set the price cap, sort newest, walk the results until you pass 24h,
-   open each recent post slowly (screenshot + DOM-read), vet inline, and insert keeps
-   into the DB (`source='zillow'`/`'apartments'`, real coords). NEVER write a scraper
-   or spawn a subagent for this — it's a tiny daily list. When ALL stages are done,
+   `MANUAL_SOURCES.md` + **BROWSER = MANUAL, ALWAYS**). With chromerpc up, you (the LLM)
+   open both sites yourself for SF + Berkeley, set the price cap, sort newest, walk the
+   results until you pass 24h, open each recent post slowly (screenshot + DOM-read), vet
+   inline, and insert keeps into the DB (`source='zillow'`/`'apartments'`, real coords).
+   NEVER write a scraper or spawn a subagent for this — it's a tiny daily list.
+1c. **Manual Zumper detail gather — BY HAND, NO scripts.** For each NEW Zumper stub
+   (`source='zumper'`, `description IS NULL`) from this run, drive chromerpc yourself to
+   its detail page (navigate → warm up → scroll-load every lazy section with real wheel
+   gestures until "One sec, gathering…" clears → screenshot → DOM-read the **ABOUT
+   body** + posted age + best-effort contact), then `db.update_detail` the description /
+   posted_at / contact so the SHARED-ROOM GATE can work. Same one-step-at-a-time,
+   screenshot-every-step discipline as Zillow/Apartments; the `fetch_zumper.py`
+   text-parsers help turn the page text into fields. When ALL stages are done,
    `py scripts/refresh.py --teardown-chromerpc`.
    **A launchd cron runs this cycle (currently disabled — user triggers manually).** Cron runs use
    `notify.py --new --quiet-if-empty` so only real new picks
@@ -203,21 +240,25 @@ This is the full cycle. Run it end to end:
 4b. `py tools/purge_db.py --execute` — DELETE rejected/removed + low-trust(<40) +
    unsafe-area rows (blocklisted so they don't re-surface), keeping ok-area trust≥40.
    Keeps the DB + dashboard to only what's worth seeing.
-4c. **Stage-1 contact-fetch (ALL kept CL, not just the ones we email).**
-   `py scripts/fetch_cl_contacts.py --all-vetted` — once vetting has settled the good
-   listings, grab the reply relay (+ any phone) for EVERY surviving `vetted`
-   Craigslist row so the dashboard carries contact info for all of them. It already
-   drives chromerpc **like a human — real Bézier mouse + no page JS**, reading the DOM
-   only to locate elements. Two rules to avoid the blocks we hit before: (1) run it on
-   **YOUR OWN chromerpc instance** — set `CHROMERPC_ADDR=localhost:<port>` — never the
-   shared `:50051` (parallel agents drive it, and reading a co-tenant's tab both
-   corrupts your reads and looks bot-like); (2) **ONE pass per listing, spaced out**
-   (`--delay`), never re-hammer. CL throttles repeated reply requests, so a big batch
-   may only resolve some — the unfetched rows are reselected on a later run; for a
-   stubborn few, reveal them **by hand** with the same primitives (`navigate` →
-   `warmup` → human-click `button.reply-button` → read the panel) rather than re-running
-   the batch. (Stage 2 then just DECIDES which of these already-contactable picks to
-   email — it does NOT fetch.)
+4c. **Stage-1 contact reveal — BY HAND, ALL kept CL (not just the ones we email).**
+   Once vetting has settled the good listings, reveal the reply relay (+ any phone) for
+   EVERY surviving `vetted` Craigslist row so the dashboard carries contact info for all
+   of them. Per **BROWSER = MANUAL, ALWAYS** there is **NO batch script for this** (the
+   old `fetch_cl_contacts.py --all-vetted` loop was removed — it's what got us
+   throttled). Do each one by hand with the primitives: `import fetch_cl_contacts as F`;
+   for a listing `navigate(url)` → sleep → `warmup()` → `screenshot` (confirm it's the
+   live post) → `_center(_qs('button.reply-button'))` → `human_click(...)` → sleep →
+   `screenshot` → `_read_reply_panel(out)` to read the relay email/phone (and
+   `reveal_in_body(out)` if the contact is gated in the BODY), then store it yourself:
+   `db.update_detail(conn, pid, dict(reply_email=…, phone=…, contact_name=…))`. Rules:
+   (1) **ONE reveal pass per listing, spaced out** — CL throttles repeated reply
+   requests per IP; if it throttles (`F._reply_uninit()` true / no reply token) STOP and
+   pick the rest up on a later run (unfetched rows are reselected). (2) If parallel
+   agents are live on the shared `:50051`, use **YOUR OWN instance**
+   (`CHROMERPC_ADDR=localhost:<port>` + `F.GRPC='localhost:<port>'`); if nothing else is
+   driving it, the shared one is fine. **Prioritise the SF picks** (the ones eligible for
+   outreach) over Berkeley. (Stage 2 then just DECIDES which of these already-contactable
+   picks to email — it does NOT fetch.)
 5. `py scripts/sync_supabase.py` — **publish to the cloud** so the public
    dashboard updates (re-run after vetting/purge so new scores/dedup land + purged
    rows drop). `refresh.py` already runs this once at the end; run it again here.
@@ -283,6 +324,21 @@ viewing of the local DB but is no longer the dashboard's data source.
    construction — already-seen post ids are skipped (id-dedup) and, since CL
    sorts newest-first, it stops once it hits a fully-seen page. So re-runs only
    add genuinely new posts (then only those go to detail+vetting).
+   **WATERMARK = RUN-START, NOT RUN-END (hard rule).** The fetch runs at the very
+   BEGINNING of a refresh. Every pull watermark (`last_pull`, `last_pull_eby`,
+   `last_pull_zumper*`, and the reply `last_reply_read`) is stamped with the
+   instant captured JUST BEFORE the pass begins — the run's start-of-fetch — NOT
+   `db.now()` after the pass finishes. This is deliberate: a listing posted DURING
+   a run's own later stages (vetting, dedup, sync — which can take many minutes)
+   was never seen by that run's fetch, so the NEXT run must read back to the prior
+   run's start-of-fetch to catch it. Stamping the watermark at run-END would leave
+   that window as a silent gap and drop those posts forever. Enforced in
+   `fetch_listings.py` / `fetch_zumper.py` / `read_replies.py` (each captures
+   `pull_started = db.now()` / `scan_start` before the pass and stamps THAT).
+   **When gathering the MANUAL chromerpc sources (Zillow / Apartments / Zumper
+   detail), use the same rule:** sort newest-first and read until you EXCEED the
+   prior run's start-of-fetch watermark (`last_pull*`), i.e. back to when the last
+   run BEGAN — not merely to when it ended.
 2. **Pull details + photos; OBJECTIVE gates only.**
    `py scripts/fetch_detail.py --all-new`
    Fetches each post's full description + coords + address + photos, derives
@@ -544,20 +600,19 @@ NOT a 1BR/1BA, so `is_1br1ba:false`, but it is still top-priority — give it a
   messages, keeps the loosely rental-relevant ones, and emits `{contacted_listings,
   replies}` JSON for Claude to MATCH + judge (the script does no brittle matching).
   Marks fetched mail `\Seen`; `--since N` / `--keep-unseen`. See OUTREACH.md.
-- `scripts/fetch_cl_contacts.py` — ON-DEMAND (not in the auto-refresh): reveal a
-  Craigslist listing's reply contact (relay email + phone) by driving the LOCAL
-  **chromerpc** browser with raw CDP + human-like Bézier mouse clicks (CL hides
-  contact behind the JS reply button). Coords come from the DOM bbox (buttons shift
-  with viewport; fixed pixels fail), the reply panel loads async (we poll), and it
-  enumerates the reply-option-headers (email/call/text) clicking each. ALSO handles
-  the in-body "click to reveal contact" pattern (`reveal_in_body()`): if the post
-  BODY gates a phone/email behind a click/blocked section, it finds the trigger,
-  human-clicks it, waits, and reads the revealed number — self-skipping when there's
-  none. Stores `reply_email` + `phone` on the row. Prereq: `cd chromerpc && ./bin/chromerpc
-  -headless -addr :50051 &`. **ONE pass per listing** — CL throttles repeated reply
-  requests per IP (a batch of 20 got ~11; the rest throttle/expire and are retried
-  on a later run since unfetched rows are reselected). `--all-vetted` | `<ids>` |
-  `--force` | `--delay N`.
+- `scripts/fetch_cl_contacts.py` — **PRIMITIVES-ONLY module — NOT runnable, NO CLI,
+  NO batch loop** (the old `--all-vetted` loop was removed; it's what got the IP
+  throttled). It provides the chromerpc human-driving building blocks used for ALL
+  by-hand browser work (CL contact reveal + Stage-3 flagging + the Zillow/Apartments/
+  Zumper detail gather): `navigate`, `warmup`, `screenshot`, `human_click` (human
+  Bézier mouse, no JS), the CDP-DOM readers `_qs/_qsa/_center/_outer/_page_lines`, and
+  the CL reply helpers `_read_reply_panel` / `reveal_in_body` (in-body "click to reveal
+  contact" pattern) / `_reply_uninit` (throttle detector). `import fetch_cl_contacts as F`
+  and issue ONE action per step, screenshotting between (see **BROWSER = MANUAL,
+  ALWAYS**). Prereq: headful chromerpc (`cd chromerpc && ./bin/chromerpc -headless=false
+  -addr :50051 &`); point at a private instance via `CHROMERPC_ADDR` / `F.GRPC` when
+  other agents share `:50051`. **ONE reveal pass per listing** — CL throttles repeated
+  reply requests per IP; if throttled, stop and retry on a later run.
 - `scripts/sync_supabase.py` — publish the minimal cloud read-model to Supabase.
 - `scripts/serve.py` — local map dashboard of the LOCAL db (http://localhost:8000).
 - `scripts/db.py` — SQLite schema + CLI (`init`, `list`, `show`, `set-status`).
