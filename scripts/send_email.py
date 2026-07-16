@@ -215,7 +215,8 @@ def main() -> int:
             to_addr = row["reply_email"]
             if not to_addr:
                 print(f"No relay email captured for listing {args.listing} "
-                      "(run fetch_cl_contacts.py first).", file=sys.stderr)
+                      "(reveal the CL reply contact BY HAND first — see CLAUDE.md "
+                      "'BROWSER = MANUAL, ALWAYS' / Refresh step 4c).", file=sys.stderr)
                 return 1
     if not to_addr:
         print("Need --to or --listing with a captured relay email.", file=sys.stderr)

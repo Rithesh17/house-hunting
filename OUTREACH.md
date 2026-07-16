@@ -7,8 +7,9 @@ first read what's come back, then vet the new listings, then send new emails.
 
 ```
 Stage 0  read + vet replies      (read_replies -> Claude matches + judges)
-Stage 1  vet new listings        (subagents) + enrich + fetch_cl_contacts --all-vetted
-                                  (relay + phone for EVERY kept CL row -> dashboard)
+Stage 1  vet new listings        (subagents) + enrich + reveal CL contacts BY HAND
+                                  (relay + phone for EVERY kept CL row -> dashboard;
+                                   manual chromerpc, one pass each — NO batch script)
 Stage 2  DECIDE who to email + send_email (CL-only; relays already captured in Stage 1)
                                   -> one combined Telegram digest at the end
 ```
@@ -105,21 +106,22 @@ coercion). Notes:
 
 ## Stage 2 — DECIDE who to email + send (Craigslist only)
 Only Craigslist exposes a reply relay; Zillow/Zumper rows are surfaced for manual
-contact, not auto-emailed. **The relay (+ phone) was already captured in Stage 1**
-(`fetch_cl_contacts --all-vetted` grabs it for EVERY kept CL row), so Stage 2 does
-NOT fetch contacts — it just PICKS which of the already-contactable listings to email
-and sends. (Fetching ALL kept CL in Stage 1 means the dashboard shows contact info
-for every good listing, not only the ones we auto-email — see CLAUDE.md step 4c.)
+contact, not auto-emailed. **The relay (+ phone) was already revealed BY HAND in
+Stage 1** (the by-hand CL contact reveal, done for EVERY kept CL row — CLAUDE.md step
+4c), so Stage 2 does NOT touch the browser — it just PICKS which of the
+already-contactable listings to email and sends. (Revealing ALL kept CL in Stage 1
+means the dashboard shows contact info for every good listing, not only the ones we
+auto-email.)
 
 For each **new, qualifying** CL pick this run (see bar below) that is not yet
 `contacted`:
-1. **Relay** — it MUST already be on the row from Stage 1 (`reply_email`, captured by
-   `fetch_cl_contacts --all-vetted`, which also auto-reveals any in-body "click for
-   contact" phone/email). **Stage 2 does NO gathering** — if a relay is still missing
-   (CL throttled it during Stage 1), SKIP that pick this run and just list it as
-   "relay pending"; it is re-fetched on the next Stage-1 contact pass. Never run
-   `fetch_cl_contacts` in Stage 2. (ALL information gathering — details, photos,
-   contact email/phone, for EVERY site — happens in Stage 1.)
+1. **Relay** — it MUST already be on the row from Stage 1 (`reply_email`, revealed BY
+   HAND, incl. any in-body "click for contact" phone/email via `reveal_in_body`).
+   **Stage 2 does NO gathering / NO browser** — if a relay is still missing (CL
+   throttled it during Stage 1), SKIP that pick this run and just list it as "relay
+   pending"; it is revealed on the next Stage-1 by-hand contact pass. (ALL information
+   gathering — details, photos, contact email/phone, for EVERY site — happens in
+   Stage 1, by hand.)
 2. **Compose a human email** — read `sensitive/email_body.json` (NEVER committed),
    pick/adapt a template, inject the real post URL into `{post_url}`, and follow its
    `style_rules`: plain casual prose, NO em-dashes/emojis/semicolons, NO LLM-tells,

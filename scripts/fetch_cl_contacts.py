@@ -1,33 +1,40 @@
-"""Fetch Craigslist reply-contact details (relay email + phone) for listings, via
-the LOCAL chromerpc service — HUMAN interaction only, NO page JavaScript.
+"""chromerpc HUMAN-driving PRIMITIVES — building blocks only, NOT a runnable script.
 
-Per THUMB_RULES: we never execute page scripts (Runtime.Evaluate). We drive the
-browser like a person — real Input mouse moves/clicks (human Bézier paths) and
-wheel scrolling — and we LOCATE elements + READ content through the CDP DOM domain
-(GetDocument -> QuerySelector(All) -> GetBoxModel for click coords; GetOuterHTML /
-GetAttributes to read), parsing the HTML in Python. Craigslist hides contact behind
-the JS 'reply' button, so: navigate -> human-click 'reply' -> enumerate the
-reply-option-header buttons -> human-click each -> read the revealed mailto/tel.
-The reply panel loads ASYNC so we poll. Results are stored on the listing row.
+>>> THIS MODULE HAS NO main(), NO CLI, NO BATCH LOOP, AND MUST NEVER GROW ONE. <<<
 
-ALSO handles the in-body 'click to reveal contact' pattern: some posts hide a
-phone/email in the body behind a clickable trigger; reveal_in_body() finds it (by
-its visible text), human-clicks it, and reads what surfaces.
+There is intentionally no way to run this file to "fetch all contacts" (or to
+auto-walk any site). A batch loop over Craigslist reply requests is exactly what
+gets the IP bot-flagged/throttled. ALL browser work — CL contact reveal, Zillow /
+Apartments / Zumper detail gathering, Stage-3 flagging — is done BY HAND by the LLM
+in the main loop: you import these primitives and issue ONE chromerpc action at a
+time, screenshotting after every step and deciding the next move from what you see.
+See the "BROWSER = MANUAL, ALWAYS" rules in CLAUDE.md / MANUAL_SOURCES.md.
 
-IMPORTANT: ONE pass per listing. Craigslist throttles repeated reply requests from
-one IP. We skip already-fetched listings (unless --force) and space requests out.
+What these primitives do (and their hard limits):
+  - Interact ONLY through chromerpc's Input gRPC — real mouse moves/clicks along
+    human Bézier paths (`human_click`, `_mouse`, `_bezier`) and wheel/scroll. Never
+    a DOM/JS click, never Runtime.Evaluate. Driving like a person is the point.
+  - READ ONLY through the CDP DOM domain to LOCATE elements (GetBoxModel -> click
+    coords via `_center`) and EXTRACT text/links (QuerySelectorAll / GetOuterHTML,
+    parsed in Python). Reading the DOM is not "interacting" with it.
+  - `screenshot()` after every navigate / click / scroll — actually look at it.
 
-Prereq — run chromerpc locally first (HEADFUL recommended). Use your OWN instance
-when other agents are running (set CHROMERPC_ADDR=localhost:<port> to match):
+Typical CL contact reveal, done by hand, one call per step (screenshot between):
+  navigate(url) -> sleep -> warmup() -> screenshot() -> confirm it's the live post
+  -> _center(_qs('button.reply-button')) -> human_click(...) -> sleep -> screenshot()
+  -> _read_reply_panel(out) to read the relay email/phone. If a post hides contact
+  in the BODY behind a click, reveal_in_body() locates + human-clicks that trigger.
+
+IMPORTANT: ONE reveal pass per listing — Craigslist throttles repeated reply
+requests per IP. If it throttles (`_reply_uninit()` true), STOP and come back later;
+never retry in a loop. Store what you get on the row yourself (db.update_detail).
+
+Prereq — chromerpc running locally, HEADFUL. Use your OWN instance when other agents
+are live (set CHROMERPC_ADDR=localhost:<port>, or in Python set this module's GRPC):
     cd chromerpc && ./bin/chromerpc -headless=false -addr :50051 &
-
-    python3 scripts/fetch_cl_contacts.py --all-vetted
-    python3 scripts/fetch_cl_contacts.py 7942959383 7942...
-    python3 scripts/fetch_cl_contacts.py --all-vetted --force --delay 15
 """
 from __future__ import annotations
 
-import argparse
 import html as _html
 import json
 import math
@@ -43,8 +50,6 @@ import time
 # number — a masked-relay extension/code ("x 46", "ext 7852", "text 46 to ..."). A
 # plain number lives in `phone`; anything else captured is noise and must NOT be stored.
 _EXT_RE = re.compile(r"\b(?:ext\.?|x)\s*\d{1,5}\b|\btext\s+\d{1,5}\s+to\b", re.I)
-
-import db
 
 # The chromerpc CDP address. Defaults to the shared :50051, but ANY run can point
 # at its own private instance via CHROMERPC_ADDR (e.g. localhost:50071) so parallel
@@ -435,102 +440,18 @@ def reveal_in_body(out: dict) -> list:
     return clicked
 
 
-def fetch_contact(url: str) -> dict:
-    """Drive chromerpc (human input + CDP DOM reads, no JS) to reveal + read the
-    contact for one listing. Returns {email, phone, options, name, ok, note, ...}."""
-    _call("cdp.emulation.EmulationService/ClearDeviceMetricsOverride", {})
-    navigate(url)
-    time.sleep(random.uniform(2.5, 4.0))
-    warmup()                       # human idle wander + scroll first
-    out = {"ok": False, "options": None, "name": None, "email": None, "phone": None,
-           "details": None}
-
-    # 1) Standard reply panel (the common case).
-    rb = _reply_button_center()
-    if rb:
-        time.sleep(random.uniform(0.4, 1.1))
-        human_click((rb["cx"], rb["cy"]))
-        if _read_reply_panel(out):
-            out["ok"] = True
-
-    # 2) In-body click-to-reveal contact (best-effort).
-    if not (out.get("email") and out.get("phone")):
-        try:
-            clicked = reveal_in_body(out)
-            if clicked:
-                out["body_reveal"] = clicked
-                if out.get("email") or out.get("phone"):
-                    out["ok"] = True
-        except Exception as e:
-            out.setdefault("note", f"body-reveal error: {e}")
-
-    if not out["ok"]:
-        if _reply_uninit():
-            out["note"] = ("reply token not issued (__SERVICE_ID__ unresolved) — IP-throttled; "
-                           "retry later, spaced out (one pass per listing)")
-        else:
-            out["note"] = "no reply panel + no in-body contact (taken down / blocked)"
-    return out
-
-
-def _targets(conn, args) -> list:
-    if args.ids:
-        rows = [db.get(conn, i) for i in args.ids]
-        return [r for r in rows if r]
-    q = "SELECT * FROM listings WHERE source='craigslist' AND status='vetted'"
-    if not args.force:
-        q += " AND (reply_email IS NULL AND contact_fetched_at IS NULL)"
-    return conn.execute(q + " ORDER BY first_seen_at DESC").fetchall()
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("ids", nargs="*", help="specific listing ids")
-    ap.add_argument("--all-vetted", action="store_true", help="all vetted CL listings")
-    ap.add_argument("--force", action="store_true", help="re-fetch even if already fetched")
-    ap.add_argument("--delay", type=int, default=12, help="seconds between listings (throttle guard)")
-    args = ap.parse_args()
-    if not args.ids and not args.all_vetted:
-        ap.error("give listing ids or --all-vetted")
-
-    # chromerpc reachable? (CDP DOM call, no JS)
-    if "_err" in _call("cdp.dom.DOMService/GetDocument", {"depth": 0}):
-        raise SystemExit("chromerpc not reachable on " + GRPC +
-                         " (override with CHROMERPC_ADDR) — start it: "
-                         "cd chromerpc && ./bin/chromerpc -headless=false -addr :50051 &")
-
-    conn = db.connect()
-    targets = _targets(conn, args)
-    print(f"{len(targets)} listing(s) to fetch contact for.\n")
-    done = 0
-    for i, row in enumerate(targets):
-        pid, url = row["id"], row["url"]
-        print(f"[{i+1}/{len(targets)}] {pid}  {url}")
-        try:
-            res = fetch_contact(url)
-        except Exception as e:
-            res = {"ok": False, "note": f"error: {e}"}
-        if res.get("ok"):
-            conn.execute(
-                "UPDATE listings SET reply_email=?, phone=COALESCE(?,phone), "
-                "contact_name=?, contact_details=COALESCE(?,contact_details), "
-                "contact_fetched_at=? WHERE id=?",
-                (res.get("email"), res.get("phone"), res.get("name"),
-                 res.get("details"), db.now(), pid))
-            conn.commit()
-            done += 1
-            br = f" body-reveal={res['body_reveal']}" if res.get("body_reveal") else ""
-            det = f"\n    details={res['details']!r}" if res.get("details") else ""
-            print(f"    options={res.get('options')} name={res.get('name')} "
-                  f"email={res.get('email')} phone={res.get('phone')}{br}{det}")
-        else:
-            print(f"    SKIP: {res.get('note')}")
-        if i < len(targets) - 1:
-            time.sleep(args.delay)
-    conn.close()
-    print(f"\nDone. Fetched contact for {done}/{len(targets)}. "
-          f"Re-run sync_supabase.py to publish to the dashboard.")
-
-
+# NOTE: There is deliberately NO fetch_contact()/main()/CLI/loop here. Reveal a
+# listing's contact BY HAND, composing the primitives above one call at a time and
+# screenshotting between steps (see the module docstring + CLAUDE.md). After you
+# read the relay email/phone, store them yourself:
+#   import db; conn = db.connect()
+#   db.update_detail(conn, pid, dict(reply_email=..., phone=..., contact_name=...))
+#   conn.commit()
+# ONE reveal pass per listing; if Craigslist throttles (_reply_uninit() true), stop
+# and retry on a later run — never loop.
 if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        "fetch_cl_contacts.py is a PRIMITIVES module, not a runnable script. "
+        "Drive chromerpc BY HAND: `import fetch_cl_contacts as F` and call "
+        "navigate/warmup/screenshot/_center/human_click/_read_reply_panel one step "
+        "at a time. See CLAUDE.md 'BROWSER = MANUAL, ALWAYS'.")

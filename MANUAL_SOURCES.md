@@ -1,14 +1,20 @@
-# Zillow + Apartments.com — gather BY HAND (no scripts, ever)
+# Zillow + Apartments.com + Zumper detail — gather BY HAND (no scripts, ever)
 
-> Read this with CLAUDE.md (the vetting rubric) and THUMB_RULES.md. It governs the
-> two sources that are **not** scripted. Craigslist + Zumper are scripted in
-> `refresh.py`; **Zillow and Apartments.com are gathered manually by the LLM** every
-> run, right after `refresh.py` finishes and before vetting.
+> Read this with CLAUDE.md (**BROWSER = MANUAL, ALWAYS** + the vetting rubric) and
+> THUMB_RULES.md. **Every browser interaction with a listing site is manual.** Only the
+> Craigslist search-list pull and the Zumper **map-API** pull are scripted (they hit
+> plain HTTP endpoints, no browser). Everything that touches a rendered page —
+> **Zillow, Apartments.com, the Zumper detail/body page, the Craigslist reply-contact
+> reveal, and Craigslist Stage-3 flagging** — is driven BY HAND by the LLM, right after
+> `refresh.py` finishes and before/around vetting.
 
 ## THE RULE (non-negotiable)
-**There is NO Zillow scraper and NO Apartments scraper. Do not write one. Do not
-spawn a subagent to do it. You — the LLM in the main loop — open the sites yourself,
-look at the pages with screenshots, and drive the browser by hand.**
+**There is NO scraper for Zillow, Apartments, Zumper detail pages, or CL contacts, and
+there never will be. Do not write one, do not restore the deleted ones, do not spawn a
+subagent to do it. You — the LLM in the main loop — open the pages yourself, screenshot
+every step, and drive the browser one chromerpc action at a time.** The building-block
+primitives live in `scripts/fetch_cl_contacts.py` (a primitives-ONLY module — no
+`main`, no CLI, no loop); you compose them by hand, never in a batch.
 
 Why this is a hard rule, not a preference:
 - Both sites are bot-walled (Zillow = PerimeterX, Apartments = Akamai). A scraper
@@ -74,6 +80,26 @@ is not.
    the coords right (read Zillow's embedded `"latitude"/"longitude"`, don't guess).
 8. Then `scripts/sync_supabase.py` so they publish, and fold them into the same
    vetting digest / Stage-2 as everything else.
+
+## Zumper detail — BY HAND too (map API gives a stub only)
+`refresh.py` inserts each new Zumper listing as a **stub** (coords + price + photos +
+raw map fields, `description=None`) — it no longer auto-drives the detail page. For
+each new `source='zumper'` row with `description IS NULL`, gather the body BY HAND:
+1. `navigate` to the listing URL, wait, `warmup`, screenshot.
+2. Scroll-load every lazy section with real wheel/scroll **gestures** (Zumper shows
+   "One sec, gathering the property details…" until scrolled) — screenshot until the
+   ABOUT section renders.
+3. DOM-read the rendered text; the `fetch_zumper.py` parsers `_about_from_text` /
+   `_age_to_iso` / `_contact_from_text` (and `extract_description`) turn it into
+   `{description, posted_at, contact}`. `db.update_detail(conn, pid, …)` to store them.
+This body is what makes the SHARED-ROOM GATE work — Zumper tags room-shares as
+"1 bedroom", so a stub with only photos WILL false-positive a private-room-in-a-house.
+
+## Craigslist contact reveal + Stage-3 flagging — BY HAND
+These are covered in CLAUDE.md (Refresh steps 4a + 4c) and use the same primitives and
+the same one-step-at-a-time, screenshot-every-step, ONE-pass-per-listing discipline. CL
+throttles repeated reply requests per IP, so if a reveal doesn't resolve, stop and retry
+on a later run — never loop.
 
 ## Recency reality
 - **Zillow** cards show "Updated today / N hours ago / Updated yesterday / N days ago".
