@@ -96,7 +96,15 @@ on a later run — never loop.
   are sparse: address + a fact or two, often no description — record what's there and
   move on.
 - **Apartments.com** lists managed buildings and has **no reliable per-card timestamp**;
-  "Last Updated" sort is the best you get. Its cheap inventory is mostly **rooms**
+  "Last Updated" sort is the best you get. **The `?sk=newest` (or any URL sort param) is
+  IGNORED — the page silently stays on "Default" (Best Match).** You MUST set it in the
+  UI: click the sort button (`#sortSearchIcon`, top-right), then in `ul.sortMenu` click the
+  `li.searchResultSortOption` whose text is **"Last Updated"** (options: Default, Rent low→high,
+  Rent high→low, Video, Virtual Tour, Last Updated). Confirm the card ORDER changed (the
+  visible "Sort" label text in the DOM is unreliable — judge by the reordered cards).
+  Because cards carry no date, open the top few and read the detail page (open-house dates
+  in the body, or "Available <date>") to judge whether a listing is genuinely new-in-window;
+  managed buildings re-"update" constantly, so newest-by-update ≠ newly-posted. Its cheap inventory is mostly **rooms**
   (labeled "Room for Rent" — drop them) and **student by-the-bed co-living** (RUMI,
   TripaLink, Berkeley Group, Ace, Wesley House, etc. — per-bed prices = shared, drop)
   and **Tenderloin/SRO** studios (avoid area). Expect **few or zero keeps**. That's fine.
@@ -121,8 +129,19 @@ Your job: fill each stub's DETAIL by hand.
    lazy-load the ABOUT + photos, then read the body with
    `fetch_zumper.extract_description(html)` (pulls the `ld+json` description) and collect
    `zumpercdn` photo urls. Screenshot each. NEVER loop unbounded (that was the old hang).
-3. **Building pages** (`/apartment-buildings/…`) have no per-unit body → vet on
-   photos/amenities. Individual-unit pages return a real body.
+3. **Zumper page TYPES differ.** `/apartment-buildings/p<id>/...` is an ILS
+   multi-unit BUILDING page with NO per-unit description body — the "property
+   overview"/"About" widgets stay stuck on "One sec, gathering the property
+   overview…" no matter how you scroll (they never hydrate to real text). What you
+   CAN read is real and sufficient: the H1 name, street address + neighborhood, the
+   manager (e.g. "Bayview Property Managers"), the rent RANGE + bed range (e.g.
+   "Studios–2, 1 bath, $1,750–$2,500"), "Updated N ago", and the photos — record
+   those, mark it a professionally-managed building (not a shared room), and move
+   on; don't burn time forcing the overview to load. `/listings/<id>p/...` is a
+   single-unit listing page and DOES have a real About/description body — scroll
+   (`F.scroll`) until it renders, then read it. Accept the OneTrust cookie banner
+   (`button#onetrust-accept-btn-handler`) and dismiss the "TAKE OUR SURVEY" popup
+   before reading either page type.
 4. **Vet + write the detail:** a Zumper stub with NO body cannot be safely vetted
    (Zumper tags room-shares as "1 bedroom" — the SHARED-ROOM GATE needs the body). So
    fill `description` (`db.update_detail`) before vetting, or mark it
@@ -131,14 +150,28 @@ Your job: fill each stub's DETAIL by hand.
    (most are already blocklisted), so genuine new detail work is usually a tiny handful.
 
 ## Hard gotchas (learned the hard way — save yourself the rediscovery)
-- **Scrolling: `mouseWheel` events do NOT scroll Zillow's detail overlays. Use the
-  scroll *gesture*** — `cdp.input.InputService/SynthesizeScrollGesture` with a negative
-  `yDistance` to go down (e.g. `{x:590,y:400,yDistance:-650,preventFling:true,speed:1400}`).
-  This is what makes lazy-loaded descriptions appear.
+- **Scrolling: `mouseWheel`/`DispatchMouseEvent` does NOT scroll ANY page** — chromerpc's
+  Input proto drops the `deltaX/deltaY` fields, so CDP rejects the wheel with
+  "'deltaX' and 'deltaY' are expected for mouseWheel event" and nothing moves (the old
+  `warmup()` wheel loop was a silent no-op for this reason). **Use `F.scroll(dy)`** —
+  the primitive added to `fetch_cl_contacts.py`, which calls
+  `cdp.input.InputService/SynthesizeScrollGesture` (`y_distance = -dy`, so `dy>0` scrolls
+  DOWN). e.g. `F.scroll(700)` a few times with `time.sleep` between to let lazy sections
+  hydrate. `warmup()` now uses it too. Message fields are snake_case
+  (`x, y, x_distance, y_distance, x_overscroll, y_overscroll, prevent_fling, speed,
+  gesture_source_type`). This is what makes lazy-loaded descriptions appear.
 - **Coordinates:** the chromerpc viewport is ~1200×773 at scale 1, so **screenshot
   pixels == click coordinates**. Still prefer locating a button via DOM
   (`_qsa` + match its text in `_outer`, then `_center`) and clicking that center — it
   survives layout shifts. `_center` returns `{cx,cy}`; pass `(cx,cy)` to `human_click`.
+- **DB writes need `conn.commit()`** — `db.connect()` opens a plain sqlite3 connection
+  with the default isolation level (implicit transaction, NO autocommit). `insert_stub`
+  / `update_detail` / `save_verdict` / `set_status` do NOT commit internally, so a
+  one-off `py -c "... db.update_detail(...)"` that just exits ROLLS BACK and silently
+  loses the write. **Always end a store with `conn.commit()`** (and do all the stores in
+  one process, committing once at the end). Verify with a follow-up SELECT.
+- **`db.mark_notified(conn, post_id)` takes a SINGLE id string, not a list** — calling it
+  with `[id]` raises "type 'list' is not supported" and aborts the script before commit.
 - **Screenshot recipe:** `CaptureScreenshot` wants `format: "SCREENSHOT_FORMAT_JPEG"`
   (or `_PNG`), returns base64 in `data`. Decode to a file and Read it.
 - Dismiss Zillow's onboarding modals ("total monthly price", "commute times") and

@@ -148,12 +148,21 @@ def human_click(E, start=(640, 430)):
     _mouse("mouseReleased", E[0], E[1], button="left", buttons=0, click_count=1)
 
 
+def scroll(dy, x=471, y=440, speed=1200):
+    """Real trackpad/wheel scroll via CDP SynthesizeScrollGesture (the plain
+    mouseWheel DispatchMouseEvent path drops the delta fields and no-ops).
+    dy > 0 scrolls the page DOWN, dy < 0 scrolls UP (CDP y_distance is inverted:
+    negative = content moves up = page scrolls down)."""
+    _call("cdp.input.InputService/SynthesizeScrollGesture",
+          {"x": x, "y": y, "y_distance": -dy, "speed": speed, "gesture_source_type": "mouse"})
+
+
 def warmup():
-    """Look like a human reading: idle cursor wanders + real wheel scroll down/up."""
+    """Look like a human reading: idle cursor wanders + real scroll down/up."""
     _bezier((random.randint(250, 450), random.randint(180, 280)),
             (random.randint(520, 820), random.randint(320, 520)))
     for dy in (random.randint(350, 600), random.randint(250, 450), -random.randint(300, 550)):
-        _mouse("mouseWheel", random.randint(450, 650), random.randint(350, 450), deltaX=0, deltaY=dy)
+        scroll(dy, x=random.randint(450, 650), y=random.randint(350, 450))
         time.sleep(random.uniform(0.5, 1.2))
     _bezier((random.randint(500, 800), random.randint(300, 500)),
             (random.randint(200, 400), random.randint(150, 300)))
