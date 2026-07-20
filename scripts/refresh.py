@@ -22,7 +22,8 @@ Runs, in order:
      when building from source). CHROME_BIN overrides Chrome auto-detection.
   1. Hydrate local DB from Supabase (scripts/hydrate_from_supabase.py)
   2. Craigslist incremental pull    (scripts/fetch_listings.py, SF + East Bay)
-  3. Zumper incremental pull         (scripts/fetch_zumper.py)
+  3. Zumper pin-pull, SF only        (scripts/fetch_zumper.py --region sf; stubs only,
+                                       no detail — see MANUAL_SOURCES.md)
   4. Detail + photos + hard gates    (scripts/fetch_detail.py --all-new)
   5. Prune taken-down listings       (scripts/check_links.py)
   6. Dedupe across sources           (tools/dedup.py)
@@ -37,10 +38,13 @@ cached market range) into data/research/<id>.json for the vetting subagents to
 cross-check. Market buckets with no cached range are printed so the orchestrator
 can fill them (one web lookup per area-group via market_comps.py set).
 
-Step 0 rebuilds local state from the cloud read-model so a fresh checkout (or a
-machine that lost the gitignored `data/listings.db`) resumes WITHOUT re-vetting
-everything or letting step 7 delete cloud rows that are merely missing locally.
-It is INSERT OR IGNORE, so on a healthy local DB it is a quick no-op.
+Step 0 ALWAYS pulls the remote first and reconciles it onto local state, so a fresh
+checkout (or a machine that lost the gitignored `data/listings.db`) resumes WITHOUT
+re-vetting everything, and step 7 never deletes cloud rows that are merely missing
+locally. Missing ids are INSERT OR IGNORE'd; rows that already exist locally are
+reconciled against the cloud (COALESCE per column, status never downgraded,
+`fit_score` untouched) so a remote-only change (e.g. contacted/interested from
+another machine) lands here without clobbering local-only work.
 
 Step 7 mirrors the current local DB up to the cloud so the public dashboard
 reflects prunes/dedup right away; re-run it after vetting so new scores publish.
@@ -83,11 +87,17 @@ PRE_STEPS = [
     ("Craigslist pull (SF)", ["scripts/fetch_listings.py"]),
     ("Craigslist pull (Berkeley / East Bay)",
      ["scripts/fetch_listings.py", "--region", "eby"]),
-    ("Zumper pull", ["scripts/fetch_zumper.py"]),
+    # Zumper: map-API pin-pull ONLY (stubs) — pins-only is the script's only mode now,
+    # no flag needed. Detail (ABOUT body + contact) is gathered BY HAND via headful
+    # chromerpc afterwards, like Zillow/Apartments — the old inline
+    # chromerpc_zumper_detail() call HUNG and truncated coverage. See MANUAL_SOURCES.md.
+    ("Zumper pin-pull (SF, stubs only)", ["scripts/fetch_zumper.py", "--region", "sf"]),
 ]
-# NOTE: Zillow + Apartments.com are NOT scripted. The LLM gathers them BY HAND through
-# headful chromerpc after this run finishes (see MANUAL_SOURCES.md). Their scrapers were
-# deleted on purpose — bot-walled, brittle, and a tiny daily list not worth automating.
+# NOTE: Zillow + Apartments.com are NOT scripted, and Zumper DETAIL is now manual too.
+# The LLM gathers all three BY HAND through headful chromerpc after this run finishes
+# (see MANUAL_SOURCES.md): Zillow/Apartments from scratch, Zumper detail on the stubs
+# this pin-pull inserted. Their scrapers were deleted / the Zumper detail step retired —
+# bot-walled or hang-prone, and a tiny daily list not worth automating fragilely.
 POST_STEPS = [
     ("Detail + photos + gates", ["scripts/fetch_detail.py", "--all-new"]),
     ("Prune dead links", ["scripts/check_links.py"]),

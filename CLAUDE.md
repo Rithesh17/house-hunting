@@ -6,7 +6,7 @@ mechanical work and personally do the **vision vetting + fit ranking**.
 
 > **Read `THUMB_RULES.md` first** — standing cost/efficiency guardrails (don't abuse
 > paid APIs, store only what the dashboard needs, never opt into paid tiers). They
-> override convenience.
+> override convenience. NEVER EVER GO AGAINST THE THUMB RULES.
 >
 > **Read `MANUAL_SOURCES.md`** — **Zillow + Apartments.com are gathered BY HAND** by
 > you (the LLM) driving headful chromerpc; there is no scraper and you must not write
@@ -167,38 +167,46 @@ price + room_type) into one tile; the dossier lists each source's link.
 This is the full cycle. Run it end to end:
 1. `py scripts/refresh.py` — does the deterministic plumbing incrementally:
    **launch headful chromerpc (auto)** + **hydrate local DB from Supabase** +
-   Craigslist pull + Zumper pull (**map-API stubs only, `description=None`**) +
-   detail/photos/gates + prune dead links + dedupe + **Stage-2 research bundles**
-   (`scripts/research.py --all-new` → `data/research/<id>.json`). It prints how many
-   NEW listings need vetting AND which market buckets need a web lookup. **It does NOT
-   pull Zillow or Apartments, and no longer auto-drives Zumper detail** — those are all
-   gathered BY HAND next (steps 1b–1c). refresh.py auto-launches chromerpc headful if
-   it's not already on :50051 (it self-clones+builds chromerpc if no binary is found;
-   `CHROME_BIN` in `.env` overrides Chrome detection); headful is REQUIRED — chromerpc
-   backs the by-hand Zumper/Zillow/Apartments detail gather, the CL contact reveal, and
-   Stage-3 flagging. `--no-browser` skips the auto-launch.
-1b. **Manual Zillow + Apartments.com gather — BY HAND, NO scripts** (see
-   `MANUAL_SOURCES.md` + **BROWSER = MANUAL, ALWAYS**). With chromerpc up, you (the LLM)
-   open both sites yourself for SF + Berkeley, set the price cap, sort newest, walk the
-   results until you pass 24h, open each recent post slowly (screenshot + DOM-read), vet
-   inline, and insert keeps into the DB (`source='zillow'`/`'apartments'`, real coords).
-   NEVER write a scraper or spawn a subagent for this — it's a tiny daily list.
-1c. **Manual Zumper detail gather — BY HAND, NO scripts.** For each NEW Zumper stub
-   (`source='zumper'`, `description IS NULL`) from this run, drive chromerpc yourself to
-   its detail page (navigate → warm up → scroll-load every lazy section with real wheel
-   gestures until "One sec, gathering…" clears → screenshot → DOM-read the **ABOUT
-   body** + posted age + best-effort contact), then `db.update_detail` the description /
-   posted_at / contact so the SHARED-ROOM GATE can work. Same one-step-at-a-time,
-   screenshot-every-step discipline as Zillow/Apartments; the `fetch_zumper.py`
-   text-parsers help turn the page text into fields. When ALL stages are done,
+   Craigslist pull + **Zumper pin-pull (SF; `fetch_zumper.py --region sf`, stubs only,
+   `description=None`, no detail)** + detail/photos/gates + prune dead links + dedupe +
+   **Stage-2 research bundles** (`scripts/research.py --all-new` →
+   `data/research/<id>.json`). It prints how many NEW listings need vetting AND which
+   market buckets need a web lookup. **It does NOT pull Zillow or Apartments, and it
+   does NOT fetch Zumper listing DETAIL** — those are all gathered BY HAND next (step
+   1b). refresh.py auto-launches chromerpc headful if it's not already on :50051 (it
+   self-clones+builds chromerpc if no binary is found; `CHROME_BIN` in `.env` overrides
+   Chrome detection); headful is REQUIRED — chromerpc backs the by-hand Zumper/Zillow/
+   Apartments detail gather, the CL contact reveal, and Stage-3 flagging. `--no-browser`
+   skips the auto-launch.
+1b. **Manual gather — BY HAND via headful chromerpc, NO scripts** (see
+   `MANUAL_SOURCES.md` + **BROWSER = MANUAL, ALWAYS**). Two things, same one-step-at-a-
+   time, screenshot-every-step discipline: (a) **Zillow + Apartments.com from scratch**
+   — open both sites yourself for SF + Berkeley, set the price cap, sort newest, walk
+   the results until you pass 24h, open each recent post slowly (screenshot + DOM-read),
+   vet inline, and insert keeps into the DB (`source='zillow'`/`'apartments'`, real
+   coords). (b) **Zumper DETAIL** on each NEW stub (`source='zumper'`,
+   `description IS NULL`) this run's pin-pull inserted — drive chromerpc yourself to its
+   detail page (navigate → wait for the JS "Client Challenge" to clear → a few bounded
+   scroll gestures until "One sec, gathering…" clears → screenshot → DOM-read the
+   **ABOUT body** + posted age + best-effort contact via `fetch_zumper.py`'s
+   `_about_from_text`/`_age_to_iso`/`_contact_from_text`/`extract_description`), then
+   `db.update_detail` the description/posted_at/contact so the SHARED-ROOM GATE can
+   work — do NOT re-run the old `chromerpc_zumper_detail()` auto-driver, it's been
+   removed (it repeatedly HUNG and truncated coverage). NEVER write a scraper or spawn a
+   subagent for either — it's a tiny daily list. When ALL stages are done,
    `py scripts/refresh.py --teardown-chromerpc`.
    **A launchd cron runs this cycle (currently disabled — user triggers manually).** Cron runs use
    `notify.py --new --quiet-if-empty` so only real new picks
-   ping Telegram (no repeated "nothing new" notes). See THUMB_RULES.md. The
-   hydrate step (`scripts/hydrate_from_supabase.py`) pulls the cloud read-model
-   back into local SQLite so a fresh checkout resumes WITHOUT re-vetting everything
-   or letting the final sync delete cloud rows that are merely missing locally
-   (`INSERT OR IGNORE`; a quick no-op on a healthy DB).
+   ping Telegram (no repeated "nothing new" notes). See THUMB_RULES.md. The hydrate
+   step (`scripts/hydrate_from_supabase.py`) **ALWAYS pulls the remote first — this
+   runs unconditionally as step 0 of every refresh** — so a fresh checkout resumes
+   WITHOUT re-vetting everything, and the final sync never deletes cloud rows merely
+   missing locally. Missing ids are `INSERT OR IGNORE`'d; rows that already exist
+   locally are RECONCILED against the cloud (so a status/verdict changed remotely —
+   e.g. this morning's `contacted`/`interested` flip — lands locally and is NOT
+   clobbered by the final sync). Reconcile is conservative: cloud wins per-column only
+   where it has a value (COALESCE — a locally-richer body/contact is never wiped),
+   status is never downgraded, and `fit_score` + local bookkeeping are left untouched.
 1a. **Fill market buckets** research flagged: do ONE `WebSearch` per
    `(area_group, room_type)` (e.g. "Inner Richmond 1BR average rent"), then
    `py scripts/market_comps.py set <group> <room_type> <low> <median> <high> web:<month>`,

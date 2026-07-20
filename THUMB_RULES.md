@@ -25,6 +25,12 @@ any fetch, sync, send, deploy, or other outside-touching action.
   trips bot defenses, and is brittle — it's banned here, no exceptions.
 - **Don't re-fetch what we already have.** Recency windows, dedup, and the blocklist
   exist so we only pull genuinely new things. Honor them.
+- **ALWAYS pull the remote DB before any fetch/refresh.** The cloud is the durable
+  read-model shared across machines and runs; another run (or this morning's) may
+  have advanced it. Reconcile local against it FIRST (`hydrate_from_supabase.py`,
+  step 0 of `refresh.py`) so we never operate on a stale local DB and never let the
+  final sync clobber a remote change. Reconcile only ever pulls the remote forward —
+  it never wipes local-only work.
 - Free tiers and goodwill are finite. Avoid needless rebuilds, redeploys, and redundant
   work — do the expensive/outward step only when something actually changed.
 
@@ -36,6 +42,8 @@ any fetch, sync, send, deploy, or other outside-touching action.
 - **Purge aggressively.** Rejects, junk, and anything we won't surface should not linger.
 
 ## 4. Use your judgement — don't lean on scripts for the hard parts
+- **NEVER EVER USE SCRIPTS TO INTERACT WITH THE WEBSITE**. This is a hard rule you should 
+  never violate. ALWAYS USE CHROMERPC ENDPOINTS TO INTERACT WITH THE WEBSITE. 
 - Scripts are for **mechanical bulk** (fetch, dedup, sync). The **judgement calls** —
   is this a scam, a shared room, a good fit, a safe neighborhood — are **yours**, made
   by actually looking, not by a keyword rule or a metadata tag.

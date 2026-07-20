@@ -2,11 +2,13 @@
 
 > Read this with CLAUDE.md (**BROWSER = MANUAL, ALWAYS** + the vetting rubric) and
 > THUMB_RULES.md. **Every browser interaction with a listing site is manual.** Only the
-> Craigslist search-list pull and the Zumper **map-API** pull are scripted (they hit
-> plain HTTP endpoints, no browser). Everything that touches a rendered page —
-> **Zillow, Apartments.com, the Zumper detail/body page, the Craigslist reply-contact
-> reveal, and Craigslist Stage-3 flagging** — is driven BY HAND by the LLM, right after
-> `refresh.py` finishes and before/around vetting.
+> Craigslist search-list pull and the Zumper **map-API** pull (`fetch_zumper.py
+> --region sf`, stubs only) are scripted (they hit plain HTTP endpoints, no browser).
+> Everything that touches a rendered page — **Zillow, Apartments.com, the Zumper
+> detail/body page, the Craigslist reply-contact reveal, and Craigslist Stage-3
+> flagging** — is driven BY HAND by the LLM, right after `refresh.py` finishes and
+> before/around vetting. Zumper's old inline `chromerpc_zumper_detail()` auto-driver
+> kept HANGING and truncating coverage, so it was retired in favor of this by-hand pass.
 
 ## THE RULE (non-negotiable)
 **There is NO scraper for Zillow, Apartments, Zumper detail pages, or CL contacts, and
@@ -81,20 +83,6 @@ is not.
 8. Then `scripts/sync_supabase.py` so they publish, and fold them into the same
    vetting digest / Stage-2 as everything else.
 
-## Zumper detail — BY HAND too (map API gives a stub only)
-`refresh.py` inserts each new Zumper listing as a **stub** (coords + price + photos +
-raw map fields, `description=None`) — it no longer auto-drives the detail page. For
-each new `source='zumper'` row with `description IS NULL`, gather the body BY HAND:
-1. `navigate` to the listing URL, wait, `warmup`, screenshot.
-2. Scroll-load every lazy section with real wheel/scroll **gestures** (Zumper shows
-   "One sec, gathering the property details…" until scrolled) — screenshot until the
-   ABOUT section renders.
-3. DOM-read the rendered text; the `fetch_zumper.py` parsers `_about_from_text` /
-   `_age_to_iso` / `_contact_from_text` (and `extract_description`) turn it into
-   `{description, posted_at, contact}`. `db.update_detail(conn, pid, …)` to store them.
-This body is what makes the SHARED-ROOM GATE work — Zumper tags room-shares as
-"1 bedroom", so a stub with only photos WILL false-positive a private-room-in-a-house.
-
 ## Craigslist contact reveal + Stage-3 flagging — BY HAND
 These are covered in CLAUDE.md (Refresh steps 4a + 4c) and use the same primitives and
 the same one-step-at-a-time, screenshot-every-step, ONE-pass-per-listing discipline. CL
@@ -112,6 +100,35 @@ on a later run — never loop.
   (labeled "Room for Rent" — drop them) and **student by-the-bed co-living** (RUMI,
   TripaLink, Berkeley Group, Ace, Wesley House, etc. — per-bed prices = shared, drop)
   and **Tenderloin/SRO** studios (avoid area). Expect **few or zero keeps**. That's fine.
+
+## Zumper detail — list via API, detail BY HAND (bounded, never hangs)
+Zumper is not bot-walled at the LIST level — its map API is reliable — so unlike
+Zillow/Apartments we DO use a script for the list, but ONLY the list. `refresh.py`
+runs `fetch_zumper.py --region sf`, which inserts `source='zumper'`
+**stubs** (coords, price, url, photos, raw map fields) and leaves `description` NULL.
+Your job: fill each stub's DETAIL by hand.
+
+1. **Find the stubs to detail:** the new Zumper rows are `source='zumper'` AND
+   `status='new'` AND `description IS NULL`. (You can also re-pull the list yourself:
+   `import fetch_zumper as Z; s=Z.zsession(); out=[]; Z.collect(s,
+   {"maxLat":37.82,"minLat":37.702,"maxLng":-122.355,"minLng":-122.52}, 100,0,out,set(),
+   url="san-francisco-ca")` → filter `price<=cap`, `not db.listing_exists`,
+   `not db.is_blocked`.)
+2. **Detail each ONE by hand via chromerpc — BOUNDED so it can't hang:**
+   `g.nav(url)`, then a bounded wait loop (≤6× `time.sleep(2.5)` reading
+   `g.outer_root()` until `"Client Challenge"` is gone and `len(html)>5000` — the JS
+   challenge clears in a real headful browser), then 2-3 `g.scroll(y=-800)` gestures to
+   lazy-load the ABOUT + photos, then read the body with
+   `fetch_zumper.extract_description(html)` (pulls the `ld+json` description) and collect
+   `zumpercdn` photo urls. Screenshot each. NEVER loop unbounded (that was the old hang).
+3. **Building pages** (`/apartment-buildings/…`) have no per-unit body → vet on
+   photos/amenities. Individual-unit pages return a real body.
+4. **Vet + write the detail:** a Zumper stub with NO body cannot be safely vetted
+   (Zumper tags room-shares as "1 bedroom" — the SHARED-ROOM GATE needs the body). So
+   fill `description` (`db.update_detail`) before vetting, or mark it
+   `legit_label:"unverified-amateur"` and never send it as a top pick.
+5. Reality check: SF Zumper ≤ cap is ~94% the same clone-scam ring we filter elsewhere
+   (most are already blocklisted), so genuine new detail work is usually a tiny handful.
 
 ## Hard gotchas (learned the hard way — save yourself the rediscovery)
 - **Scrolling: `mouseWheel` events do NOT scroll Zillow's detail overlays. Use the

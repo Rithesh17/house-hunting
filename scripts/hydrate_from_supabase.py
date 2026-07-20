@@ -18,9 +18,18 @@ What it restores:
     the incremental fetch SKIP the post instead of re-discovering and re-vetting
     it; 'removed' keeps it off the dashboard and out of the next cloud sync.
 
-SAFE to run on a populated DB: every write is INSERT OR IGNORE, so existing
-local rows are never clobbered — only missing ids are filled in. This is why
-`refresh.py` can call it unconditionally as its first step.
+SAFE to run on a populated DB, and it ALWAYS pulls the remote first: missing ids
+are INSERT OR IGNORE'd, and rows that ALREADY exist locally are RECONCILED against
+the cloud (the durable read-model) so the local DB mirrors the remote before any
+refresh proceeds. Reconcile is conservative — it never wipes local work:
+  * cloud wins per-column only where it HAS a value (COALESCE), so a locally-richer
+    field (the post body, a freshly-fetched contact) is never nulled out;
+  * status is never DOWNGRADED along the lifecycle (a local flip we haven't synced
+    yet — e.g. we just emailed it — is kept), only pulled forward;
+  * fit_score is left alone (the cloud stores the AREA-ADJUSTED display match, not
+    the raw unit score — writing it back would corrupt + then double-discount it),
+    and local-only bookkeeping (dedup group, timestamps, `notified`) is untouched.
+This is why `refresh.py` can call it unconditionally as its first step.
 
     py scripts/hydrate_from_supabase.py
 """
@@ -177,6 +186,57 @@ def _insert_ignore(conn, row: dict) -> bool:
     return cur.rowcount > 0
 
 
+# Lifecycle order for status. Reconcile never DOWNGRADES a row (a locally-more-
+# advanced status — e.g. we emailed it since the last sync — is kept); it only
+# pulls the cloud FORWARD (this morning's contacted/interested flip lands locally).
+_STATUS_RANK = {"new": 0, "vetted": 1, "contacted": 2, "interested": 3, "visited": 4}
+
+
+def _more_advanced(a: str | None, b: str | None) -> str:
+    """Whichever status is further along the lifecycle (ties -> the first)."""
+    return a if _STATUS_RANK.get(a or "", -1) >= _STATUS_RANK.get(b or "", -1) else b
+
+
+def _reconcile(conn, c: dict, new_status: str) -> None:
+    """Pull the cloud read-model onto a row that ALREADY exists locally, so local
+    mirrors the remote before a refresh proceeds. COALESCE(cloud, local) per
+    column: the cloud wins where it has a value, local is kept where the cloud is
+    null (never wipe a locally-richer field). Deliberately EXCLUDES fit_score
+    (cloud holds the area-adjusted display match, not the raw score), low_polish/
+    is_1br1ba (hydrate defaults, not real cloud fields), and description / dedup
+    group / bookkeeping timestamps / notified (local-owned)."""
+    img = c.get("image_urls") or []
+    rf = c.get("red_flags")
+    vals = {
+        "title": c.get("title"),
+        "price": c.get("price"),
+        "bedrooms": c.get("bedrooms"),
+        "bathrooms": c.get("bathrooms"),
+        "sqft": c.get("sqft"),
+        "room_type": c.get("room_type"),
+        "area": c.get("area"),
+        "neighborhood": c.get("neighborhood"),
+        "address": c.get("address"),
+        "lat": c.get("lat"),
+        "lng": c.get("lng"),
+        "url": c.get("url"),
+        "image_urls": _json_str(img) if img else None,
+        "image_count": (len(img) if isinstance(img, list) and img else None),
+        "phone": c.get("phone"),
+        "reply_email": c.get("reply_email"),
+        "contact_name": c.get("contact_name"),
+        "contact_details": c.get("contact_details"),
+        "legit_score": c.get("legit_score"),
+        "legit_label": c.get("legit_label"),
+        "red_flags": _json_str(rf) if rf not in (None, [], "") else None,
+        "verdict_summary": c.get("verdict_summary"),
+        "recommendation": c.get("recommendation"),
+    }
+    set_parts = ["status=?"] + [f"{k}=COALESCE(?,{k})" for k in vals]
+    conn.execute(f"UPDATE listings SET {', '.join(set_parts)} WHERE id=?",
+                 [new_status, *vals.values(), c["id"]])
+
+
 def main() -> None:
     conn = db.connect()
     conn.executescript(db.SCHEMA)            # ensure tables exist (fresh DB)
@@ -184,11 +244,23 @@ def main() -> None:
     cloud = _fetch_cloud_rows()
     print(f"Fetched {len(cloud)} row(s) from Supabase.")
 
-    n_primary = n_stub = 0
+    # Snapshot local statuses up front so reconcile can compare (and so a row
+    # inserted this run isn't then reconciled against itself).
+    local_status = {r[0]: r[1] for r in
+                    conn.execute("SELECT id, status FROM listings").fetchall()}
+
+    n_primary = n_reconciled = n_stub = 0
     seen_ids: set[str] = set()
     for c in cloud:
-        if _insert_ignore(conn, _primary_row(c)):
-            n_primary += 1
+        cur = local_status.get(c["id"])
+        if cur is None:
+            if _insert_ignore(conn, _primary_row(c)):
+                n_primary += 1
+        elif cur not in ("rejected", "removed"):
+            # Already here -> mirror the cloud read-model onto it (pull remote
+            # first), keeping the more-advanced status so a local flip is never lost.
+            _reconcile(conn, c, _more_advanced(c.get("status"), cur))
+            n_reconciled += 1
         seen_ids.add(c["id"])
 
     # Folded duplicate posts: restore their ids so the next fetch skips them.
@@ -210,8 +282,9 @@ def main() -> None:
 
     conn.commit()
     conn.close()
-    print(f"Hydrated {n_primary} unit(s) + {n_stub} folded-duplicate stub(s) "
-          f"into the local DB (INSERT OR IGNORE; existing rows untouched).")
+    print(f"Hydrated {n_primary} new unit(s), reconciled {n_reconciled} existing "
+          f"unit(s) against the cloud, + {n_stub} folded-duplicate stub(s) "
+          f"(local DB now mirrors the remote).")
 
 
 if __name__ == "__main__":
