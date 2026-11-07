@@ -120,10 +120,21 @@ async function load() {
     document.getElementById("list").innerHTML =
       `<p class="empty">Couldn't reach the listings service. Try again shortly.</p>`;
   }
+  fitPriceSlider();
   buildAreaMenu();
   buildSourceMenu();
   render();
   openFromHash();
+}
+
+/* The price slider's ceiling follows the data (each region profile sets its own
+ * cap), so nothing published is hidden by default. */
+function fitPriceSlider() {
+  const top = Math.max(2000, ...LISTINGS.map((d) => d.price || 0));
+  const el = document.getElementById("filter-price");
+  el.max = Math.ceil(top / 50) * 50;   // max first, or the value clamps to the old max
+  el.value = el.max;
+  syncRangeLabels();
 }
 
 /* Shape a cloud row to what the renderer expects. */
@@ -209,7 +220,7 @@ function updateSourceBtn() {
 function filters() {
   return {
     sort: val("sort"), type: val("filter-type"),
-    maxPrice: +val("filter-price"),   // range slider, 0..2000
+    maxPrice: +val("filter-price"),   // range slider, 0..max published price
     minLegit: +val("filter-legit"), minFit: +val("filter-fit"),
     status: val("filter-status"),
     hideScams: document.getElementById("hide-scams").checked,
@@ -381,8 +392,8 @@ function renderList(items) {
 /* ----------------------------------------------------------- map */
 function initMap() {
   MAP = L.map("map", { scrollWheelZoom: true }).setView(SF, 12.4);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
-    maxZoom: 20, attribution: "© OpenStreetMap, © CARTO",
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: "© OpenStreetMap contributors",
   }).addTo(MAP);
 }
 function renderMarkers(items) {
@@ -592,7 +603,7 @@ function openModal(id) {
            ${nearestBart(d.lat, d.lng) ? `<div class="locnote bart">🚇 ${nearestBart(d.lat, d.lng)}</div>` : ""}
            <div class="locnote">Approximate — pin is block / neighborhood accurate, not the exact unit.</div></div>`
       : (d.address
-        ? `<div class="locblock"><h4>Location</h4><a class="loclink" href="https://www.openstreetmap.org/search?query=${encodeURIComponent((d.address || "") + ", San Francisco, CA")}" target="_blank" rel="noopener">View ${esc(d.address)} on OpenStreetMap ↗</a></div>`
+        ? `<div class="locblock"><h4>Location</h4><a class="loclink" href="https://www.openstreetmap.org/search?query=${encodeURIComponent((d.address || "") + ", " + regionOf(d) + ", CA")}" target="_blank" rel="noopener">View ${esc(d.address)} on OpenStreetMap ↗</a></div>`
         : "")}
     ${d.verdict_summary ? `<div class="infoblock"><h4>Assessment</h4><p>${esc(d.verdict_summary)}</p></div>` : ""}
     ${infoHtml}
@@ -611,7 +622,7 @@ function openModal(id) {
       const el = document.getElementById("d-map");
       if (!el || DMAP) return;
       DMAP = L.map(el, { scrollWheelZoom: false, attributionControl: false }).setView([d.lat, d.lng], 15);
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", { maxZoom: 19 }).addTo(DMAP);
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(DMAP);
       L.circleMarker([d.lat, d.lng], { radius: 8, weight: 2, color: "#fff",
         fillColor: scoreColor(d.fit_score), fillOpacity: 1 }).addTo(DMAP);
       DMAP.invalidateSize();
