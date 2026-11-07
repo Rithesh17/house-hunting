@@ -35,8 +35,18 @@ def normalize_id(raw: str) -> str:
     return digits.zfill(8) if digits else ""
 
 
+# A licence id may be written with separators between the digits — scam posts
+# deliberately dot theirs ("01.39.87.68") so it still reads as a licence to a human
+# but defeats a plain \d{7,8} match. Allow . - or spaces INSIDE the number; the
+# digit count is validated after stripping, so this cannot over-match a longer run.
 _EXTRACT_RE = re.compile(
-    r"(?:cal\s?dre|dre|d\.r\.e\.|license|lic\.?)\s*#?\s*:?\s*(\d{7,8})", re.IGNORECASE)
+    r"(?:cal\s?dre|dre|d\.r\.e\.|license|lic\.?)\s*#?\s*:?\s*(\d[\d.\s-]{5,14}\d)",
+    re.IGNORECASE)
+
+# The same trick with NO keyword in front of it ("broker fee details: 01.39.87.68 I
+# Real Rstate Agent"). Four dot-separated pairs is a distinctive shape — a phone
+# number or a date does not match it — so it is safe to pick up bare.
+_DOTTED_RE = re.compile(r"\b\d{2}[.\-]\d{2}[.\-]\d{2}[.\-]\d{2}\b")
 
 
 def extract_dre(text: str | None) -> list[str]:
@@ -44,10 +54,14 @@ def extract_dre(text: str | None) -> list[str]:
     de-duplicated, normalized to 8 digits. Empty list if none (the common case —
     small landlords / subletters have no license, which is fine)."""
     found = []
-    for m in _EXTRACT_RE.finditer(text or ""):
-        lid = normalize_id(m.group(1))
-        if lid and lid not in found:
-            found.append(lid)
+    for rx, grp in ((_EXTRACT_RE, 1), (_DOTTED_RE, 0)):
+        for m in rx.finditer(text or ""):
+            digits = re.sub(r"\D", "", m.group(grp))
+            if len(digits) not in (7, 8):
+                continue
+            lid = normalize_id(digits)
+            if lid and lid not in found:
+                found.append(lid)
     return found
 
 

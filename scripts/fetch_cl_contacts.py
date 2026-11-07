@@ -157,6 +157,30 @@ def scroll(dy, x=471, y=440, speed=1200):
           {"x": x, "y": y, "y_distance": -dy, "speed": speed, "gesture_source_type": "mouse"})
 
 
+def _key(t, **kw):
+    p = {"type": t}; p.update(kw)
+    _call("cdp.input.InputService/DispatchKeyEvent", p)
+
+
+def type_text(s: str, per_key=(0.06, 0.17)):
+    """Real keystrokes (CDP DispatchKeyEvent), human-paced. NOT page JS, NOT DOM focus —
+    the field must already be focused by a real human_click. Digits/plain ASCII only."""
+    for ch in s:
+        vk = ord(ch.upper()) if ch.isalnum() else 0
+        _key("keyDown", text=ch, unmodified_text=ch, key=ch,
+             windows_virtual_key_code=vk, native_virtual_key_code=vk)
+        time.sleep(random.uniform(0.02, 0.05))
+        _key("keyUp", key=ch, windows_virtual_key_code=vk, native_virtual_key_code=vk)
+        time.sleep(random.uniform(*per_key))
+
+
+def press(key: str, vk: int):
+    """Press one named key (Enter=13, Backspace=8, Tab=9, Escape=27)."""
+    _key("rawKeyDown", key=key, windows_virtual_key_code=vk, native_virtual_key_code=vk)
+    time.sleep(random.uniform(0.03, 0.07))
+    _key("keyUp", key=key, windows_virtual_key_code=vk, native_virtual_key_code=vk)
+
+
 def warmup():
     """Look like a human reading: idle cursor wanders + real scroll down/up."""
     _bezier((random.randint(250, 450), random.randint(180, 280)),

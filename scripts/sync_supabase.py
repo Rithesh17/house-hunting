@@ -35,7 +35,9 @@ SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 REST = f"{SUPABASE_URL}/rest/v1/listings" if SUPABASE_URL else None
 
 # Listings in these states are never published to the cloud/dashboard read-model.
-SKIP_STATUS = {"rejected", "removed"}
+# "closed" = a lead we pursued and finished with: kept locally so the
+# unit-level resend guard still sees it, but not shown on the dashboard.
+SKIP_STATUS = {"rejected", "removed", "closed"}
 
 
 def _json_list(val):

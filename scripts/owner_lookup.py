@@ -19,7 +19,10 @@ import re
 
 import requests
 
-DATASF = "https://data.sfgov.org/resource/wv5m-vpq2.json"
+# NOTE: data.sfgov.org now 301-redirects to data.sf.gov, and the redirect was
+# surfacing as a 403 — which silently disabled the Stage-2 owner/parcel check on
+# every listing. Point at the new host directly. (Fixed 2026-09-23.)
+DATASF = "https://data.sf.gov/resource/wv5m-vpq2.json"
 FIELDS = ("parcel_number,property_location,property_class_code_definition,"
           "number_of_units,number_of_bedrooms,number_of_bathrooms,"
           "year_property_built,analysis_neighborhood,closed_roll_year")

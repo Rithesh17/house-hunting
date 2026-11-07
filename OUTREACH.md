@@ -123,12 +123,41 @@ For each **new, qualifying** CL pick this run (see bar below) that is not yet
    gathering — details, photos, contact email/phone, for EVERY site — happens in
    Stage 1, by hand.)
 2. **Compose a human email** — read `sensitive/email_body.json` (NEVER committed),
-   pick/adapt a template, inject the real post URL into `{post_url}`, and follow its
-   `style_rules`: plain casual prose, NO em-dashes/emojis/semicolons, NO LLM-tells,
-   2–6 short sentences, vary the wording, paste the link bare on its own line. Always
-   include: interest + ask if available, ask for an in-person viewing, move-in ~Aug
-   1, a SHORT about-me, the post link. Subject: `Interested in this: <address>` (or
-   the listing title). Never share PII beyond the first name.
+   pick/adapt a template, inject the real post URL into `{post_url}` and the move-in
+   date into `{move_in_date}` (see below), and follow its `style_rules`: plain casual
+   prose, NO em-dashes/emojis/semicolons, NO LLM-tells, 2–6 short sentences, vary the
+   wording, paste the link bare on its own line. Always include: interest + ask if
+   available, ask for an in-person viewing, the move-in date, a SHORT about-me, the
+   post link. Subject: `Interested in this: <address>` (or the listing title). Never
+   share PII beyond the first name.
+
+   **MOVE-IN DATE = THIS RUN'S PULL DATE + EXACTLY ONE MONTH. NEVER HARD-CODE IT.**
+   Every run recomputes it; there is no fixed date anywhere in the docs, the templates,
+   or the code, and you must not reintroduce one. Derive it at compose time from the
+   `last_pull` watermark this run stamped (the run's start-of-fetch instant) — the same
+   date the listings you are emailing about were pulled — then add one calendar month.
+
+   **Two traps, both handled by the snippet below — do not hand-roll this:**
+   1. **`last_pull` is stored in UTC.** Convert to LOCAL time before taking the date, or
+      any run after ~5pm Pacific silently reads as the NEXT day and the email quotes a
+      move-in one day late.
+   2. **Clamp the day to the target month's length** — Jan 31 + 1 month is Feb 28/29,
+      never Mar 2. (`dateutil` is NOT installed here, so this is the real path.)
+   ```
+   python3 -c "import sys;sys.path.insert(0,'scripts');import db,calendar; \
+     from datetime import datetime; c=db.connect(); \
+     lp=datetime.fromisoformat(db.get_meta(c,'last_pull')).astimezone(); \
+     y,m=lp.year+(lp.month==12),(lp.month%12)+1; \
+     print(lp.replace(year=y,month=m,day=min(lp.day,calendar.monthrange(y,m)[1])).strftime('%B %-d'))"
+   # pulled 2026-08-15 17:01 PDT (= 08-16T00:01Z) -> "September 15"
+   ```
+
+   Write it in the email as that exact date, in plain prose ("looking to move in on
+   September 15"), NOT as "around <date>" and NOT as a relative phrase ("ASAP", "in a
+   month"). If `last_pull` is somehow unset, fall back to today's date + one month —
+   never to a remembered or previously-used date. The same value goes into
+   `{move_in_date}` wherever `sensitive/email_body.json` uses it, so the templates stay
+   date-free.
 3. **Send** — `python3 scripts/send_email.py --auto --listing <id> --subject "..."
    --body-file /tmp/<id>.txt`. It sends via authenticated Gmail SMTP (real
    SPF/DKIM/DMARC, no bot headers) and flips the listing to `contacted`. `--auto`

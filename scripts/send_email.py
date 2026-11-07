@@ -102,8 +102,10 @@ def _unit_already_contacted(listing_id: str):
         conn.close()
         return None
     contacted = conn.execute(
+        # 'closed' counts too: a lead we contacted and later closed is still a
+        # unit we have already emailed, and must never be emailed a second time.
         "SELECT id, dup_group, address, phone FROM listings "
-        "WHERE status='contacted' AND id!=?", (listing_id,)
+        "WHERE status IN ('contacted','closed') AND id!=?", (listing_id,)
     ).fetchall()
     conn.close()
     grp = me["dup_group"] or listing_id

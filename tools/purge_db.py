@@ -30,6 +30,10 @@ TRUST_FLOOR = 40
 
 
 def _reason(row, tier) -> str | None:
+    # 'closed' rows are finished leads we already emailed. They are the unit-level
+    # resend guard's memory, so they are never purged by the trust/area rules.
+    if row["status"] == "closed":
+        return None
     if row["status"] in ("rejected", "removed"):
         return f"{row['status']} (room/SRO/dead — out of pool)"
     ls = row["legit_score"]
