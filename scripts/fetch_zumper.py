@@ -48,6 +48,18 @@ REGIONS = {
 SF_BOX = REGIONS["sf"]["box"]
 
 
+def _profile_region(cfg: dict) -> dict:
+    """Zumper search region from the active non-legacy regions/<slug>.yaml profile
+    (its `zumper:` block), shaped like the built-in REGIONS entries."""
+    reg = cfg["region"]
+    z = reg["zumper"]
+    # The map API scopes results to the `url` city slug, so a multi-town region lists
+    # one slug per town (`urls`); pull_region collects each into the same pin set.
+    urls = z.get("urls") or [z["url"]]
+    return {"box": z["box"], "url": urls[0], "urls": urls, "page": z["page"],
+            "meta_key": f"last_pull_zumper_{reg['slug']}", "label": reg.get("label")}
+
+
 def zsession(page: str = REGIONS["sf"]["page"]) -> requests.Session:
     s = requests.Session()
     s.headers.update({
@@ -217,7 +229,7 @@ def pull_region(conn, cfg, region_key, sess) -> int:
     LLM via chromerpc (see MANUAL_SOURCES.md 'BROWSER = MANUAL, ALWAYS'). So rows
     land with description=None and must have the body read by hand before the
     SHARED-ROOM GATE can be trusted."""
-    reg = REGIONS[region_key]
+    reg = REGIONS[region_key] if region_key in REGIONS else _profile_region(cfg)
     max_price = cfg["max_price"]
     s = zsession(reg["page"])
 
@@ -230,7 +242,9 @@ def pull_region(conn, cfg, region_key, sess) -> int:
 
     print(f"[zumper] pulling {reg['label']} pins (recursive box subdivision)...")
     pins: list = []
-    collect(s, reg["box"], 100, 0, pins, set(), reg["url"])
+    seen: set = set()
+    for slug in reg.get("urls", [reg["url"]]):
+        collect(s, reg["box"], 100, 0, pins, seen, slug)
     print(f"  {len(pins)} unique pins in {reg['label']}")
 
     new = 0
@@ -299,13 +313,17 @@ def pull_region(conn, cfg, region_key, sess) -> int:
 def main() -> None:
     import argparse
     ap = argparse.ArgumentParser(description="Pull Zumper rentals into the DB.")
-    ap.add_argument("--region", default="both", choices=["sf", "berkeley", "both"],
-                    help="'sf' (default citywide SF), 'berkeley' (East Bay near-BART), "
-                         "or 'both'")
+    ap.add_argument("--region", default=None,
+                    choices=["sf", "berkeley", "both", "profile"],
+                    help="'profile' = the active regions/<slug>.yaml (default when a "
+                         "non-legacy region is active); 'sf' (citywide SF), 'berkeley' "
+                         "(East Bay near-BART), or 'both' (default for the legacy sf profile)")
     args = ap.parse_args()
+    cfg = common.load_config()
+    if args.region is None:
+        args.region = "both" if common.region_is_legacy(cfg) else "profile"
     regions = ["sf", "berkeley"] if args.region == "both" else [args.region]
 
-    cfg = common.load_config()
     conn = db.connect()
     sess = common.session(cfg)         # for image downloads
     print("[zumper] map-API stubs only — listing bodies/contacts are gathered BY HAND "

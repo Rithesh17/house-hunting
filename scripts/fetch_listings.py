@@ -53,8 +53,15 @@ def build_url(cfg: dict, offset: int, region: str = "sfc") -> str:
     }
     if cfg.get("excats"):
         params["excats"] = cfg["excats"]
+    if region == "profile":
+        # Non-legacy region profile: its CL site/subarea + extra params (e.g. postal +
+        # search_distance radius) — see regions/README.md.
+        cl = cfg["region"].get("craigslist", {})
+        params.update(cl.get("params", {}))
+        base = f"{cl.get('site', common.CL_BASE)}/search/{cl['subarea']}/hhh"
+    else:
+        base = common.CL_SEARCH_EBY if region == "eby" else common.CL_SEARCH
     query = "&".join(f"{k}={v}" for k, v in params.items())
-    base = common.CL_SEARCH_EBY if region == "eby" else common.CL_SEARCH
     return f"{base}?{query}"
 
 
@@ -106,6 +113,22 @@ def assign_area(location: str, cfg: dict) -> str | None:
         return cfg.get("unspecified_area_name", "(unspecified SF)")
     # a named SF neighborhood not in the preferred list — keep it (all of SF)
     return location.strip().title()
+
+
+def assign_area_region(location: str, cfg: dict) -> str | None:
+    """Discovery filter for a non-legacy region profile. Drop posts whose location
+    text names a `drop_cities` town; label by the profile `areas` (first match);
+    keep everything else under the profile's default area name. Coordinates (the
+    profile `bounds` gate) and reverse-geocoding (tools/locate.py) are the real
+    authority later — this only sheds the obvious out-of-scope towns."""
+    reg = cfg["region"]
+    loc = (location or "").strip().lower()
+    hit = common.best_area(loc, reg.get("areas", []))
+    if hit:
+        return hit["name"]
+    if any(c in loc for c in reg.get("drop_cities", [])):
+        return None
+    return reg.get("default_area_name", reg.get("label"))
 
 
 def parse_results(html: str) -> list[dict]:
@@ -162,8 +185,11 @@ def run_pass(conn, cfg: dict, area_filter: str | None = None,
     page_size = cfg["scrape"].get("page_size", 120)
     max_pages = cfg["scrape"].get("max_pages_per_pass", 10)
     blocked = set(cfg.get("blocked_categories", common.DEFAULT_BLOCKED_CATEGORIES))
-    assign = assign_area_berkeley if region == "eby" else (
-        lambda loc, _cfg=cfg: assign_area(loc, _cfg))
+    if region == "profile":
+        assign = lambda loc, _cfg=cfg: assign_area_region(loc, _cfg)
+    else:
+        assign = assign_area_berkeley if region == "eby" else (
+            lambda loc, _cfg=cfg: assign_area(loc, _cfg))
     new_rows: list[dict] = []
     seen_urls: set[str] = set()
     scanned = dropped = dropped_cat = dropped_room = 0
@@ -225,10 +251,14 @@ def main() -> None:
     cfg = common.load_config()
     ap = argparse.ArgumentParser()
     ap.add_argument("--area", help="limit to one configured area by name")
-    ap.add_argument("--region", default="sfc", choices=["sfc", "eby"],
-                    help="'sfc' = San Francisco (default); 'eby' = East Bay / safe "
-                         "near-BART Berkeley (Oakland excluded)")
+    ap.add_argument("--region", default=None, choices=["sfc", "eby", "profile"],
+                    help="'profile' = the active regions/<slug>.yaml (default when a "
+                         "non-legacy region is active); 'sfc' = San Francisco (default "
+                         "for the legacy sf profile); 'eby' = East Bay / safe near-BART "
+                         "Berkeley (Oakland excluded)")
     args = ap.parse_args()
+    if args.region is None:
+        args.region = "sfc" if common.region_is_legacy(cfg) else "profile"
     conn = db.connect()
 
     area_filter = None
@@ -241,11 +271,14 @@ def main() -> None:
             sys.exit(1)
         area_filter = match[0]
 
-    meta_key = "last_pull_eby" if args.region == "eby" else "last_pull"
+    meta_key = ("last_pull_eby" if args.region == "eby"
+                else f"last_pull_{cfg['region']['slug']}" if args.region == "profile"
+                else "last_pull")
     prior = db.get_meta(conn, meta_key)
     if prior:
         print(f"(last {args.region} pull: {prior} — incremental: only new posts added)")
     label = ("safe near-BART Berkeley (East Bay)" if args.region == "eby"
+             else cfg["region"].get("label") if args.region == "profile"
              else "all of SF")
     print(f"[broad pass] {label}, price-capped, office/parking excluded:")
     # Watermark = the instant BEFORE the pass begins (run start), NOT db.now()

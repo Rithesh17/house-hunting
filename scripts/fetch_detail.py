@@ -88,7 +88,14 @@ def parse_post(html: str) -> dict:
     # Contact from the post body: phone, email, and any CA DRE license # (agents
     # cite one; small landlords/subletters don't — absence is neutral). The DRE #
     # is verified later in scripts/research.py against the public DRE lookup.
-    blob = " ".join([data.get("title", ""), data.get("description", "")])
+    # NB: include the ATTRIBUTE strip (_raw_attrs), not just title+body. The active
+    # SF clone-scam ring puts its (impersonated, dot-obfuscated) licence ONLY in the
+    # attrs — "broker fee details: 01.39.87.68 I Real Rstate Agent" — so leaving the
+    # attrs out meant dre_number stayed NULL and research.py had nothing to verify,
+    # silently disabling the one automated check that catches the ring. Same for the
+    # phone, which research.py's sibling detection uses to link a flood.
+    blob = " ".join([data.get("title", ""), data.get("description", ""),
+                     data.get("_raw_attrs", "") or ""])
     phone = PHONE_RE.search(blob)
     email = EMAIL_RE.search(blob)
     dre = verify_dre.extract_dre(blob)
@@ -153,6 +160,8 @@ def _in_box(lat, lng, b) -> bool:
 def _in_sf(lat, lng) -> bool:
     """Accept a geocode that lands in a target region (SF or the Berkeley box) so a
     good address-geocode replaces the loose map pin; reject a stray city-centroid."""
+    if not common.region_is_legacy():
+        return common.in_region_bounds(lat, lng)
     return _in_box(lat, lng, _SF_BOUNDS) or _in_box(lat, lng, _BERK_BOUNDS)
 
 

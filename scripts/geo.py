@@ -36,7 +36,7 @@ _cfg_cache: dict = {}
 def _tier_cfg(key: str) -> dict:
     """Cached {names, zones} block from config.yaml for 'unsafe' or 'caution'."""
     if key not in _cfg_cache:
-        _cfg_cache[key] = common.load_config().get(key, {}) or {}
+        _cfg_cache[key] = common.cached_config().get(key, {}) or {}
     return _cfg_cache[key]
 
 
@@ -157,7 +157,10 @@ def classify(lat, lng, area_text: str | None = None,
     """
     # East Bay (across the bay) is a separate world: only safe near-BART Berkeley is
     # `ok`, the rest is `avoid`. SF coords (lng <= -122.34) fall through to SF logic.
-    eb = _eastbay_tier(lat, lng)
+    # Non-legacy region profiles (regions/<slug>.yaml) carry their own unsafe/caution
+    # model (overlaid by common.load_config) and skip the SF-specific East Bay branch.
+    legacy = common.region_is_legacy()
+    eb = _eastbay_tier(lat, lng) if legacy else None
     if eb is not None:
         return eb
     nh, zh = _match(area_text, place_name, lat, lng, _tier_cfg("unsafe"))
@@ -169,7 +172,9 @@ def classify(lat, lng, area_text: str | None = None,
         label = (zh["name"] if zh else None) or place_name or area_text or nh
         return {"area_tier": "caution", "area_name": label, "unsafe": False}
     return {"area_tier": "ok",
-            "area_name": place_name or area_text or "San Francisco",
+            "area_name": place_name or area_text or (
+                "San Francisco" if legacy
+                else common.cached_config()["region"].get("label")),
             "unsafe": False}
 
 

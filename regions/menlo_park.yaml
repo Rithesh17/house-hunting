@@ -1,0 +1,101 @@
+# Region profile: Menlo Park & nearby (Midpeninsula).
+# Authored by the agent from the user's request on 2026-11-06 ("in and around Menlo
+# Park ... 1 bed 1 bath ... safe and trusted neighbourhood under $2000", stretched to
+# $2,300 surface-cap by the user's call). See regions/README.md for the schema.
+
+slug: menlo_park
+label: "Menlo Park & nearby"
+state: CA
+
+# --- budget + wanted unit types ---------------------------------------------------
+budget_target: 2000      # the user's real budget; anything above is flagged "over budget"
+max_price: 2300          # PULL / SURFACE cap (stretch). Over this = reject.
+wanted:
+  primary: [1br]         # 1 bed / 1 bath whole unit (auto-send eligible)
+  also_top: [2br_plus]   # whole 2+ bed unit, surfaced at full score, manual contact
+  fallback: [studio]     # spacious studio (>=450 sqft), surfaced, never emailed
+  reject: [room, sro, shared]
+
+# --- geography --------------------------------------------------------------------
+center: [37.4530, -122.1817]          # downtown Menlo Park (dashboard map default)
+# Objective in-area gate (filters.objective_reject_reason + geocode acceptance):
+# coords outside this box are auto-rejected as out of area. Covers Redwood City
+# (south of Whipple) -> Atherton -> Menlo Park -> Palo Alto (to ~Page Mill/Oregon)
+# -> Portola Valley/Ladera.
+bounds:
+  lat: [37.360, 37.505]
+  lng: [-122.300, -122.100]
+
+# Towns that are IN scope (discovery keeps posts whose location text reads as one).
+cities: ["menlo park", "atherton", "palo alto", "redwood city", "portola valley",
+         "ladera", "stanford", "west menlo park", "woodside", "emerald hills"]
+# Towns that are clearly OUT of scope (discovery drops them by location text).
+# NOTE "east palo alto" contains "palo alto": the area model sinks it as `avoid`
+# rather than dropping it here, so it stays visible to the purge/blocklist.
+drop_cities: ["san carlos", "belmont", "san mateo", "foster city", "mountain view",
+              "los altos", "sunnyvale", "san jose", "santa clara", "half moon bay",
+              "burlingame", "millbrae", "san bruno", "daly city", "san francisco",
+              "cupertino", "milpitas", "fremont", "newark", "hayward", "oakland",
+              "berkeley", "pacifica", "south san francisco", "brisbane"]
+default_area_name: "Menlo Park area"
+
+# Reverse-geocode every listing's coords to its real town / neighbourhood
+# (tools/locate.py, OpenStreetMap Nominatim, 1 req/s). This is the PRIMARY area signal
+# here: city lines (Menlo Park | East Palo Alto | North Fair Oaks) are blocks apart, so
+# a post's self-described area text is not trusted alone.
+reverse_geocode: true
+
+# Labels used for display + market-comp grouping (first match wins; lowercase).
+areas:
+  - { name: "East Palo Alto",  group: "epa",         match: ["east palo alto"] }
+  - { name: "North Fair Oaks", group: "nfo",         match: ["north fair oaks"] }
+  - { name: "Menlo Park",      group: "menlo_park",  match: ["menlo park", "belle haven", "the willows", "sharon heights", "allied arts"] }
+  - { name: "Atherton",        group: "atherton",    match: ["atherton"] }
+  - { name: "Palo Alto",       group: "palo_alto",   match: ["palo alto", "stanford", "college terrace", "crescent park", "professorville", "old palo alto", "barron park", "midtown"] }
+  - { name: "Redwood City",    group: "redwood_city", match: ["redwood city", "emerald hills", "redwood shores"] }
+  - { name: "Portola Valley / Ladera", group: "portola_valley", match: ["portola valley", "ladera", "woodside"] }
+
+# --- area model (same tier semantics as the SF model; see scripts/geo.py) -----------
+# Sources (2026-11 lookup): EPA violent crime above national avg in most aggregators
+# despite 0 homicides in 2025 (KTVU); North Fair Oaks = unincorporated Middlefield
+# corridor between RWC and MP; Belle Haven = MP's higher-crime pocket per DoorProfit
+# (still B+, so caution not avoid). User accepted EPA + NFO as avoid on 2026-11-06.
+unsafe:
+  names: ["east palo alto", "north fair oaks"]
+  zones:
+    - { name: "East Palo Alto",  lat: 37.4677, lng: -122.1411, radius_km: 1.20 }
+    - { name: "North Fair Oaks", lat: 37.4760, lng: -122.2010, radius_km: 0.90 }
+caution:
+  names: ["belle haven", "redwood village", "friendly acres"]
+  zones:
+    - { name: "Belle Haven (Menlo Park)",          lat: 37.4790, lng: -122.1590, radius_km: 0.80 }
+    - { name: "Redwood Village / Friendly Acres",  lat: 37.4800, lng: -122.2150, radius_km: 0.50 }
+
+# --- sources ----------------------------------------------------------------------
+craigslist:
+  site: https://sfbay.craigslist.org
+  subarea: pen                # SF Bay "peninsula"
+  params: { postal: 94025, search_distance: 6 }   # miles around Menlo Park
+zumper:
+  box: { maxLat: 37.505, minLat: 37.360, maxLng: -122.100, minLng: -122.300 }
+  url: menlo-park-ca
+  # The map API scopes pins to ONE city slug — list every in-scope town.
+  urls: [menlo-park-ca, palo-alto-ca, redwood-city-ca, atherton-ca, portola-valley-ca,
+         east-palo-alto-ca, stanford-ca]
+  page: https://www.zumper.com/apartments-for-rent/menlo-park-ca
+# Manual (by-hand chromerpc) sources: one search per town, price-capped, sorted newest.
+manual_sources:
+  zillow:
+    - https://www.zillow.com/menlo-park-ca/rentals/
+    - https://www.zillow.com/palo-alto-ca/rentals/
+    - https://www.zillow.com/atherton-ca/rentals/
+    - https://www.zillow.com/redwood-city-ca/rentals/
+    - https://www.zillow.com/portola-valley-ca/rentals/
+  apartments:
+    - https://www.apartments.com/menlo-park-ca/under-2300/
+    - https://www.apartments.com/palo-alto-ca/under-2300/
+    - https://www.apartments.com/atherton-ca/under-2300/
+    - https://www.apartments.com/redwood-city-ca/under-2300/
+
+# --- stage-2 research ---------------------------------------------------------------
+owner_lookup: none            # DataSF assessor roll is SF-only -> owner check neutral here

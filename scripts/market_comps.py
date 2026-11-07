@@ -20,6 +20,7 @@ import argparse
 import json
 import sys
 
+import common
 import db
 
 MAX_AGE_DAYS = 60  # refresh a bucket if older than this
@@ -44,6 +45,15 @@ _GROUPS = [
 
 def area_group(area: str | None) -> str:
     a = (area or "").lower()
+    reg = common.cached_config()["region"]
+    if not reg.get("legacy"):
+        # Non-legacy region profile: its `areas` carry the market group (longest
+        # keyword wins so "east palo alto" never reads as "palo alto").
+        ar = common.best_area(a, reg.get("areas", [])) or next(
+            (x for x in reg.get("areas", []) if x["name"].lower() == a), None)
+        if ar:
+            return ar.get("group", ar["name"].lower().replace(" ", "_"))
+        return f"{reg['slug']}_other"
     for group, kws in _GROUPS:
         if any(k in a for k in kws):
             return group

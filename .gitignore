@@ -10,6 +10,8 @@ data/listings.db
 data/images/
 data/research/
 data/_verdicts*.json
+data/backups/
+data/.chromerpc_runtime.json
 
 # python
 __pycache__/

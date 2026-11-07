@@ -11,6 +11,8 @@ matching (which historically caused false drops).
 """
 from __future__ import annotations
 
+import common
+
 # Rough San Francisco bounding box (lat, lng).
 SF_LAT = (37.695, 37.840)
 SF_LNG = (-122.530, -122.340)
@@ -42,6 +44,11 @@ def objective_reject_reason(*, image_count, lat, lng) -> str | None:
     fit) is left to the subagent vetting pass."""
     if not image_count:
         return "no photos"
+    if lat is not None and lng is not None and not common.region_is_legacy():
+        # Non-legacy region profile: its `bounds` box is the objective gate.
+        if not common.in_region_bounds(lat, lng):
+            return f"outside target area (coords {lat:.3f},{lng:.3f})"
+        return None
     if lat is not None and lng is not None:
         in_sf = (SF_LAT[0] <= lat <= SF_LAT[1] and SF_LNG[0] <= lng <= SF_LNG[1])
         in_berk = (BERKELEY_LAT[0] <= lat <= BERKELEY_LAT[1]

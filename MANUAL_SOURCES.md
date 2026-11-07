@@ -57,7 +57,13 @@ is not.
   scroll the listing into view, pause between actions. You are imitating a person
   browsing, not a bot hammering.
 
-## The workflow (per site, per region: SF and Berkeley)
+## The workflow (per site, per region)
+**Which searches:** the active region profile's `manual_sources` URLs
+(`regions/<slug>.yaml`; for the legacy `sf` profile: SF, + Berkeley only when asked).
+The price cap is the profile's `max_price`. **A new region's FIRST run has no 24h
+cutoff** — walk every current result (all pages), not just the newest; afterwards
+the usual newest-first stop applies. After inserting keeps by hand, run
+`python3 tools/locate.py <ids>` so each row gets its real town for the area model.
 1. **Navigate** to the search, **warm up** (a human wheel-scroll or two), screenshot.
 2. **Set the price filter** to the cap (config `max_price`, currently $2000) by
    clicking the filter UI (or, fine, a price-capped search URL). Screenshot to confirm.

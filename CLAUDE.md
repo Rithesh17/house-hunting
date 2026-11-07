@@ -1,8 +1,35 @@
-# SF House-Hunting Assistant — Claude Code Playbook
+# House-Hunting Assistant — Claude Code Playbook (any city / region)
 
-This project finds affordable SF rentals. **Claude Code is the engine:** the user
-opens a session and asks for listings; you orchestrate the Python scripts for the
-mechanical work and personally do the **vision vetting + fit ranking**.
+This project finds affordable rentals in **whatever region the user names** — it
+started as SF-only and SF remains a built-in profile. **Claude Code is the engine:**
+the user opens a session and asks for listings; you orchestrate the Python scripts
+for the mechanical work and personally do the **vision vetting + fit ranking**.
+
+## Regions — READ FIRST (which city is this run for?)
+The search region is a **profile**: `regions/<slug>.yaml`, selected by
+`config.yaml` → `active_region` (or `$HH_REGION` for one run). **Active default:
+`menlo_park`** (Menlo Park, Atherton, Palo Alto, Redwood City, Portola Valley/Ladera;
+East Palo Alto + North Fair Oaks = avoid, Belle Haven = caution; budget $2,000,
+surface cap $2,300 with over-$2,000 flagged "over budget"; set 2026-11-06).
+- When the user asks for a **new city/region**, follow **`regions/README.md`**:
+  gather city + nearby towns, areas to avoid, budget/stretch, unit types, outreach
+  yes/no (ask only what's missing) → research the area model → write the profile →
+  smoke-test → run the normal Refresh cycle. The run is agent-assisted: inputs go
+  into the profile YAML, not CLI flags.
+- **`sf` is a LEGACY profile:** every SF/Berkeley rule below (areas, the
+  `unsafe:`/`caution:`/`berkeley:` blocks in `config.yaml`, CL `sfc`/`eby`, Zumper
+  sf/berkeley, DataSF owner lookup, BART) is kept **verbatim** and used unchanged
+  when `active_region: sf`. Do not delete or rewrite them.
+- For a non-legacy profile, read every "SF"-specific statement below as "the
+  active region": its budget (`budget_target`/`max_price`), its `unsafe`/`caution`
+  area model (same three tiers, same ranking + MATCH discount), its towns. The
+  user's UNIT criteria (1BR/1BA + whole 2+ bed top, studio fallback, long-term,
+  full private kitchen/bath, shared-room gate, scam rubric) apply everywhere.
+- Non-legacy runs add **`tools/locate.py`** (reverse-geocodes every row's coords to
+  its REAL town → `area`) — refresh.py runs it; run it yourself after hand-inserting
+  Zillow/Apartments/Zumper rows. The owner/parcel check is neutral outside SF.
+- A **new region's first run has no posted-date cutoff** — walk ALL current results
+  on every source (manual ones too), not just the last 24h.
 
 > **Read `THUMB_RULES.md` first** — standing cost/efficiency guardrails (don't abuse
 > paid APIs, store only what the dashboard needs, never opt into paid tiers). They
@@ -16,6 +43,12 @@ mechanical work and personally do the **vision vetting + fit ranking**.
 > (Stage 0 read+vet replies → Stage 1 vet+enrich listings → Stage 2 contact+send),
 > the `new → vetted → contacted → interested` status model, and the single combined
 > Telegram digest. The refresh cron runs it when enabled.
+>
+> **The outreach move-in date is NEVER hard-coded.** Every run sets it to THAT run's
+> pull date — the `last_pull` watermark stamped at start-of-fetch — **plus exactly one
+> calendar month**, recomputed at compose time (pulled Aug 15 → "September 15"). Never
+> carry a date over from a previous run, a template, or memory.
+> See OUTREACH.md Stage 2 step 2.
 
 ## BROWSER = MANUAL, ALWAYS (no scripts, no DOM interaction — hard rule)
 **EVERY browser interaction with a listing site is done BY HAND by you (the LLM in

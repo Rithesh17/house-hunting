@@ -27,6 +27,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))   # reuse dedup's cluster helpers
 
+import common
 import db
 import dedup            # img_ids / addr_key / coord_key (single source of truth)
 import market_comps
@@ -58,6 +59,20 @@ def _contacts(row) -> set[str]:
         if v:
             out.add(str(v).strip().lower())
     return out
+
+
+def _owner_block(row) -> dict:
+    """Parcel facts via owner_lookup (DataSF — SF only). A non-legacy region profile
+    with `owner_lookup: none` gets a NEUTRAL 'not available' block instead of a
+    misleading SF miss (a miss must never read as 'address is not a parcel')."""
+    reg = common.cached_config()["region"]
+    if not reg.get("legacy") and reg.get("owner_lookup", "none") == "none":
+        return {"found": None, "note": f"no free parcel source wired for "
+                f"{reg.get('label')} — owner check NEUTRAL (do a WebSearch on the "
+                f"address if needed)"}
+    if row["lat"] is None:
+        return {"found": False, "note": "no coords"}
+    return owner_lookup.owner_of_record(row["lat"], row["lng"], row["address"])
 
 
 def find_siblings(conn, target) -> list[dict]:
@@ -174,8 +189,7 @@ def build_bundle(conn, post_id: str) -> dict | None:
                                      "neighborhood", "lat", "lng", "phone",
                                      "contact", "dre_number")},
         "dre": dre,
-        "owner": owner_lookup.owner_of_record(row["lat"], row["lng"], row["address"])
-                 if row["lat"] is not None else {"found": False, "note": "no coords"},
+        "owner": _owner_block(row),
         "market": _market_block(conn, row, extra),
         "siblings": find_siblings(conn, row),
         # Source-provided structured signals (Zillow): is_room_for_rent (a direct

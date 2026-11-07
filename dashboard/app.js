@@ -1,4 +1,4 @@
-/* The San Francisco Property Register — interactions */
+/* The Property Register (any region) — interactions */
 let LISTINGS = [], MARKERS = [], MAP = null, DMAP = null, VIEW = "list", PAGE = 1;
 const PAGE_SIZE = 24;
 
@@ -140,11 +140,15 @@ function normalize(d) {
 /* Two broad regions only (no fine-grained sub-areas): East Bay (Berkeley) vs
  * San Francisco. A listing is Berkeley if its area/neighborhood/address says so
  * or its latitude is north of the SF/Oakland line (~37.84); else San Francisco. */
+/* Other regions (regions/<slug>.yaml profiles, e.g. Menlo Park): listings south of
+ * SF (lat < 37.69) are grouped by their town label (`area`, set by tools/locate.py),
+ * so the filter menu works for any region without a dashboard change. */
 const REGIONS = ["San Francisco", "Berkeley"];
 function regionOf(d) {
   const txt = `${d.area || ""} ${d.neighborhood || ""} ${d.address || ""}`.toLowerCase();
   if (txt.includes("berkeley")) return "Berkeley";
   if (typeof d.lat === "number" && d.lat >= 37.84) return "Berkeley";
+  if (typeof d.lat === "number" && d.lat < 37.69) return d.area || "Other";
   return "San Francisco";
 }
 
@@ -152,7 +156,8 @@ function buildAreaMenu() {
   const present = new Set(LISTINGS
     .filter((d) => d.status !== "rejected" && d.status !== "removed")
     .map(regionOf));
-  const areas = REGIONS.filter((r) => present.has(r));
+  const areas = [...REGIONS.filter((r) => present.has(r)),
+                 ...[...present].filter((r) => !REGIONS.includes(r)).sort()];
   const menu = document.getElementById("area-menu");
   menu.innerHTML = areas.map((a) =>
     `<label class="area-opt"><input type="checkbox" value="${esc(a)}"${SELECTED_AREAS.has(a) ? " checked" : ""}> ${esc(a)}</label>`
@@ -400,7 +405,13 @@ function renderMarkers(items) {
       <a href="#" onclick="openModal('${d.id}');return false;">Open dossier →</a></div>`);
     MARKERS.push(m);
   }
+  // Region-agnostic: frame the listings on first render (any city), not a fixed SF view.
+  if (!MAP_FIT && MARKERS.length) {
+    MAP.fitBounds(L.featureGroup(MARKERS).getBounds().pad(0.15), { maxZoom: 14 });
+    MAP_FIT = true;
+  }
 }
+let MAP_FIT = false;
 
 function setView(view) {
   VIEW = view;

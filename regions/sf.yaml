@@ -1,0 +1,17 @@
+# Region profile: San Francisco (+ the one-off Berkeley/East Bay option).
+#
+# LEGACY profile: the SF + Berkeley rules live, unchanged, in config.yaml
+# (`areas`, `unsafe`, `caution`, `berkeley`, max_price, ...) and in the scripts'
+# original SF/Berkeley code paths (CL sfc/eby, Zumper sf/berkeley boxes, the DataSF
+# owner lookup, the BART-aware East Bay classifier). `legacy: true` tells
+# common.load_config() NOT to overlay anything, so selecting this profile runs the
+# pipeline exactly as it ran before region profiles existed.
+slug: sf
+label: "San Francisco"
+state: CA
+legacy: true
+center: [37.7749, -122.4194]
+budget_target: 2000
+manual_sources:
+  zillow: [https://www.zillow.com/san-francisco-ca/rentals/]
+  apartments: [https://www.apartments.com/san-francisco-ca/under-2000/]

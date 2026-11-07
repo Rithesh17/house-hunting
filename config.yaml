@@ -3,6 +3,12 @@
 # citywide pass per room_type (price + bedrooms ARE honored server-side) and then
 # buckets results into target areas by matching the listing's location text.
 
+# ACTIVE REGION — which regions/<slug>.yaml profile this run targets (override with
+# $HH_REGION). `sf` = the original SF/Berkeley rules below, used verbatim. Any other
+# profile overlays its own budget / areas / unsafe / caution model on top of this
+# file (see regions/README.md + CLAUDE.md "Regions").
+active_region: menlo_park
+
 max_price: 2000          # hard cap, $/month
 min_bathrooms: 1
 

@@ -21,7 +21,7 @@ Runs, in order:
      clone. OS-independent (tempfile + git + go; needs git + a Go toolchain only
      when building from source). CHROME_BIN overrides Chrome auto-detection.
   1. Hydrate local DB from Supabase (scripts/hydrate_from_supabase.py)
-  2. Craigslist incremental pull    (scripts/fetch_listings.py, SF + East Bay)
+  2. Craigslist incremental pull    (scripts/fetch_listings.py, SF only)
   3. Zumper pin-pull, SF only        (scripts/fetch_zumper.py --region sf; stubs only,
                                        no detail — see MANUAL_SOURCES.md)
   4. Detail + photos + hard gates    (scripts/fetch_detail.py --all-new)
@@ -85,8 +85,10 @@ CHROMERPC_STATE = os.path.join(ROOT, "data", ".chromerpc_runtime.json")
 PRE_STEPS = [
     ("Hydrate from Supabase", ["scripts/hydrate_from_supabase.py"]),
     ("Craigslist pull (SF)", ["scripts/fetch_listings.py"]),
-    ("Craigslist pull (Berkeley / East Bay)",
-     ["scripts/fetch_listings.py", "--region", "eby"]),
+    # NO Berkeley / East Bay in the regular refresh — the user searches SAN FRANCISCO ONLY
+    # (reconfirmed 2026-09-08). Berkeley is a ONE-OFF, run only when the user explicitly asks;
+    # do it by hand with `fetch_listings.py --region eby` + `fetch_zumper.py --region berkeley`
+    # and the Berkeley-specific rules. Do not add it back to this list.
     # Zumper: map-API pin-pull ONLY (stubs) — pins-only is the script's only mode now,
     # no flag needed. Detail (ABOUT body + contact) is gathered BY HAND via headful
     # chromerpc afterwards, like Zillow/Apartments — the old inline
@@ -105,6 +107,33 @@ POST_STEPS = [
     ("Research bundles (DRE/owner/dups/market)", ["scripts/research.py", "--all-new"]),
     ("Publish to Supabase", ["scripts/sync_supabase.py"]),
 ]
+
+
+# Non-legacy region profiles (regions/<slug>.yaml, selected by config.yaml
+# `active_region` / $HH_REGION) swap the SF pulls for the profile's own CL + Zumper
+# search, and add a reverse-geocode step (tools/locate.py) so every listing carries
+# its REAL town for the area model. The legacy `sf` profile keeps the lists above.
+PROFILE_PRE_STEPS = [
+    ("Hydrate from Supabase", ["scripts/hydrate_from_supabase.py"]),
+    ("Craigslist pull (region profile)", ["scripts/fetch_listings.py", "--region", "profile"]),
+    ("Zumper pin-pull (region profile, stubs only)",
+     ["scripts/fetch_zumper.py", "--region", "profile"]),
+]
+PROFILE_POST_STEPS = [POST_STEPS[0],
+                      ("Locate (reverse-geocode town)", ["tools/locate.py", "--all"]),
+                      *POST_STEPS[1:]]
+
+
+def _steps():
+    """(pre, post, region_label, watermark_key) for the active region profile."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import common  # noqa: E402
+    cfg = common.load_config()
+    reg = cfg["region"]
+    if reg.get("legacy"):
+        return PRE_STEPS, POST_STEPS, reg.get("label", "San Francisco"), "last_pull"
+    return (PROFILE_PRE_STEPS, PROFILE_POST_STEPS, reg.get("label", reg["slug"]),
+            f"last_pull_{reg['slug']}")
 
 
 def _ts() -> str:
@@ -335,9 +364,11 @@ def main():
     # before the pulls. When no prebuilt binary exists it is cloned + built from
     # source into an OS temp dir; tear it down at the very end with --teardown-chromerpc.
     run_t0 = time.time()
-    total = len(PRE_STEPS) + len(POST_STEPS)
+    pre_steps, post_steps, region_label, wm_key = _steps()
+    total = len(pre_steps) + len(post_steps)
     print(f"{'#'*70}\n# REFRESH START {time.strftime('%Y-%m-%d %H:%M:%S')} "
-          f"— {total} steps (Craigslist + Zumper; Zillow/Apartments are manual)\n{'#'*70}",
+          f"— region: {region_label} — {total} steps (Craigslist + Zumper; "
+          f"Zillow/Apartments are manual)\n{'#'*70}",
           flush=True)
 
     if not args.no_browser:
@@ -345,13 +376,13 @@ def main():
         ensure_chromerpc()
 
     step = 0
-    for label, a in PRE_STEPS:
+    for label, a in pre_steps:
         step += 1
         run(label, a, step, total)
 
     sys.path.insert(0, os.path.join(ROOT, "scripts"))
     import db  # noqa: E402
-    for label, a in POST_STEPS:
+    for label, a in post_steps:
         step += 1
         run(label, a, step, total)
 
@@ -359,7 +390,7 @@ def main():
     to_vet = conn.execute(
         "SELECT count(*) c FROM listings WHERE status='new' AND detail_fetched_at IS NOT NULL"
     ).fetchone()["c"]
-    last = db.get_meta(conn, "last_pull")
+    last = db.get_meta(conn, wm_key)
     conn.close()
 
     print(f"\n{'='*70}\nREFRESH COMPLETE (Craigslist + Zumper) — last pull {last}")
